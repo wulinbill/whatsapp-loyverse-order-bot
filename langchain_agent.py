@@ -2,8 +2,13 @@ from langchain.agents import initialize_agent, AgentType, Tool
 from langchain.memory import ConversationBufferMemory
 from langchain.chat_models import ChatOpenAI
 import gpt_tools
+from utils.logger import get_logger
 
-llm = ChatOpenAI(model_name="gpt-4o", temperature=0)
+logger = get_logger(__name__)
+
+# A single shared OpenAI client instance – thread-safe according to the
+# official Python SDK documentation.
+llm = ChatOpenAI(model_name="gpt-4o", temperature=0, request_timeout=30)
 
 tools = [
     Tool(name="ParseOrder", func=gpt_tools.tool_parse_order, description="解析客户点餐内容为 JSON"),
