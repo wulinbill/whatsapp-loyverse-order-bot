@@ -6,6 +6,8 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 from loyverse_auth import get_access_token
 from utils.logger import get_logger
+from unicodedata import normalize
+from difflib import get_close_matches
 
 logger = get_logger(__name__)
 
@@ -157,6 +159,46 @@ async def get_payment_types() -> Dict[str, Any]:
             raise
 
 
+# Helper ---------------------------------------------------------------------
+
+def _normalize_name(name: str) -> str:
+    """Normalize item name for comparison.
+    1. Lower-case.
+    2. Remove accents.
+    3. Strip surrounding whitespace.
+    4. Remove common punctuation / bracketed text.
+    """
+    if not name:
+        return ""
+    # Remove accents
+    name = normalize("NFKD", name).encode("ASCII", "ignore").decode("ASCII")
+    # Lowercase and strip
+    name = name.lower().strip()
+    # Remove bracketed content e.g. "(arroz + papas)"
+    for sep in ["(", "[", "{" ]:
+        if sep in name:
+            name = name.split(sep, 1)[0].strip()
+    return name
+
+
+def _find_item_id(name: str, name_to_id: Dict[str, str]) -> Optional[str]:
+    """Return exact or fuzzy-matched Loyverse item id for provided name."""
+    norm = _normalize_name(name)
+    if not norm:
+        return None
+
+    # 1) Direct exact match after normalization
+    if norm in name_to_id:
+        return name_to_id[norm]
+
+    # 2) Fuzzy match using difflib on keys
+    close = get_close_matches(norm, name_to_id.keys(), n=1, cutoff=0.8)
+    if close:
+        return name_to_id[close[0]]
+
+    return None
+
+
 async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
     """创建订单（收据）
     
@@ -184,7 +226,10 @@ async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
         menu_data = await get_menu_items()
         item_name_to_id = {}
         for item in menu_data.get("items", []):
-            item_name_to_id[item.get("name", "").lower()] = item.get("id")
+            # Store normalized key to id for flexible lookup
+            key = _normalize_name(item.get("name", ""))
+            if key:
+                item_name_to_id[key] = item.get("id")
         
         # 获取默认支付类型
         payment_types = await get_payment_types()
@@ -209,7 +254,7 @@ async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
             quantity = item.get("quantity", 1)
             
             # 查找商品 ID
-            item_id = item_name_to_id.get(item_name.lower())
+            item_id = _find_item_id(item_name, item_name_to_id)
             if not item_id:
                 logger.warning("未找到商品 '%s' 的 ID，跳过该项目", item_name)
                 continue
