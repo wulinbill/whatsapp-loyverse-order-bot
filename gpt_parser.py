@@ -1,4 +1,4 @@
-"""GPT-4o 订单解析模块"""
+"""GPT-4o 订单解析模块 - 改进版本"""
 import os
 import json
 from pathlib import Path
@@ -157,7 +157,7 @@ def validate_order_json(order_json: str) -> Dict[str, Any]:
 
 
 def get_menu_item_names(menu_data: Dict[str, Any]) -> List[str]:
-    """从菜单数据中提取商品名称列表
+    """从菜单数据中提取商品名称列表 - 改进版本
     
     Args:
         menu_data: 菜单数据字典
@@ -165,21 +165,104 @@ def get_menu_item_names(menu_data: Dict[str, Any]) -> List[str]:
     Returns:
         商品名称列表
     """
-    if not isinstance(menu_data, dict) or "items" not in menu_data:
-        logger.warning("菜单数据格式无效")
+    logger.debug("开始解析菜单数据，数据类型: %s", type(menu_data))
+    
+    if not isinstance(menu_data, dict):
+        logger.warning("菜单数据不是字典格式: %s", type(menu_data))
         return []
     
-    items = menu_data.get("items", [])
+    logger.debug("菜单数据包含的键: %s", list(menu_data.keys()))
+    
+    # 检查不同可能的结构
+    items = None
+    
+    # 标准结构：{"items": [...]}
+    if "items" in menu_data:
+        items = menu_data["items"]
+        logger.debug("找到 'items' 键，类型: %s", type(items))
+    
+    # 备选结构：{"data": [...]} 或直接是数组
+    elif "data" in menu_data:
+        items = menu_data["data"]
+        logger.debug("找到 'data' 键，类型: %s", type(items))
+    
+    # 如果菜单数据本身就是列表
+    elif isinstance(menu_data, list):
+        items = menu_data
+        logger.debug("菜单数据本身是列表")
+    
     if not isinstance(items, list):
-        logger.warning("菜单项目不是数组格式")
+        logger.warning("菜单项目不是数组格式，实际类型: %s", type(items))
+        if items is not None:
+            logger.debug("菜单项目内容前100字符: %s", str(items)[:100])
         return []
+    
+    logger.debug("菜单项目数量: %d", len(items))
     
     names = []
-    for item in items:
-        if isinstance(item, dict) and "name" in item:
-            name = item["name"]
-            if isinstance(name, str) and name.strip():
-                names.append(name.strip())
+    for i, item in enumerate(items):
+        try:
+            if isinstance(item, dict):
+                # 寻找名称字段的不同可能性
+                name = None
+                
+                # 常见的名称字段
+                for name_key in ["name", "item_name", "product_name", "title", "display_name"]:
+                    if name_key in item:
+                        name = item[name_key]
+                        break
+                
+                if name and isinstance(name, str) and name.strip():
+                    names.append(name.strip())
+                    logger.debug("项目 %d: 提取名称 '%s'", i, name.strip())
+                else:
+                    logger.debug("项目 %d: 未找到有效名称，键: %s", i, list(item.keys()) if isinstance(item, dict) else "非字典")
+                    
+                    # 如果没有找到名称字段，记录项目结构用于调试
+                    if i < 3:  # 只记录前3个项目避免日志过多
+                        logger.debug("项目 %d 结构: %s", i, json.dumps(item, ensure_ascii=False, indent=2)[:200])
+            else:
+                logger.debug("项目 %d 不是字典格式: %s", i, type(item))
+                
+        except Exception as e:
+            logger.warning("处理菜单项目 %d 时出错: %s", i, e)
+            continue
     
-    logger.debug("提取到 %d 个菜单项目名称", len(names))
+    logger.info("成功提取到 %d 个菜单项目名称", len(names))
+    
+    if not names:
+        logger.error("未能从菜单数据中提取任何名称！")
+        logger.error("菜单数据结构摘要:")
+        logger.error("  - 数据类型: %s", type(menu_data))
+        logger.error("  - 主要键: %s", list(menu_data.keys()) if isinstance(menu_data, dict) else "不适用")
+        if isinstance(menu_data, dict) and "items" in menu_data:
+            items_sample = menu_data["items"][:2] if isinstance(menu_data["items"], list) else menu_data["items"]
+            logger.error("  - 前2个项目样本: %s", json.dumps(items_sample, ensure_ascii=False, indent=2)[:500])
+    
     return names
+
+
+def debug_menu_structure(menu_data: Dict[str, Any]) -> None:
+    """调试菜单数据结构 - 辅助函数"""
+    print("=== 菜单数据结构调试 ===")
+    print(f"数据类型: {type(menu_data)}")
+    
+    if isinstance(menu_data, dict):
+        print(f"顶级键: {list(menu_data.keys())}")
+        
+        for key, value in menu_data.items():
+            print(f"\n键 '{key}':")
+            print(f"  类型: {type(value)}")
+            if isinstance(value, list):
+                print(f"  长度: {len(value)}")
+                if value:
+                    print(f"  第一个元素类型: {type(value[0])}")
+                    if isinstance(value[0], dict):
+                        print(f"  第一个元素键: {list(value[0].keys())}")
+                        print(f"  第一个元素: {json.dumps(value[0], ensure_ascii=False, indent=4)[:300]}")
+            elif isinstance(value, dict):
+                print(f"  子键: {list(value.keys())}")
+            else:
+                print(f"  值: {str(value)[:100]}")
+    
+    print("=" * 30)
