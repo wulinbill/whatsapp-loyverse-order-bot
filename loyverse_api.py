@@ -8,6 +8,7 @@ from loyverse_auth import get_access_token
 from utils.logger import get_logger
 from unicodedata import normalize
 from difflib import get_close_matches
+import time
 
 logger = get_logger(__name__)
 
@@ -17,6 +18,25 @@ STORE_ID = os.getenv("LOYVERSE_STORE_ID")
 if not STORE_ID:
     raise RuntimeError("Environment variable LOYVERSE_STORE_ID is required but missing.")
 
+
+# ---------------------------------------------------------------------------
+# In-memory menu cache & name→id index
+# ---------------------------------------------------------------------------
+
+_MENU_CACHE: Optional[Dict[str, Any]] = None  # raw menu json
+_NAME2ID: Dict[str, str] = {}
+_CACHE_TS: float = 0.0
+# 默认 10 分钟，可通过环境变量覆盖
+CACHE_TTL = int(os.getenv("LOYVERSE_MENU_CACHE_TTL", "600"))
+
+# 对外暴露只读视图，供其他模块快速查表
+
+def get_name_to_id_mapping() -> Dict[str, str]:
+    """Return current item-name → id index (already normalized)."""
+    return _NAME2ID
+
+# Backward-compat alias (external modules may do `from loyverse_api import name2id`)
+name2id = _NAME2ID
 
 async def _get_headers() -> Dict[str, str]:
     """获取 API 请求头
@@ -35,11 +55,12 @@ async def _get_headers() -> Dict[str, str]:
     }
 
 
-async def get_menu_items(cache_path: str = "menu_data.json") -> Dict[str, Any]:
-    """获取菜单项目，优先从缓存读取
+async def get_menu_items(cache_path: str = "menu_data.json", force_refresh: bool = False) -> Dict[str, Any]:
+    """获取菜单项目（带本地缓存）
     
     Args:
         cache_path: 缓存文件路径
+        force_refresh: True 时忽略 TTL 强制刷新
         
     Returns:
         包含菜单项目的字典
@@ -48,20 +69,31 @@ async def get_menu_items(cache_path: str = "menu_data.json") -> Dict[str, Any]:
         httpx.HTTPError: API 请求失败
         json.JSONDecodeError: JSON 解析失败
     """
+    global _MENU_CACHE, _NAME2ID, _CACHE_TS
+
+    # 内存缓存 + TTL
+    if _MENU_CACHE and not force_refresh and (time.time() - _CACHE_TS < CACHE_TTL):
+        logger.debug("使用内存缓存的菜单 (age %.1fs)", time.time() - _CACHE_TS)
+        return _MENU_CACHE
+
     cache_file = Path(cache_path)
-    
-    # 尝试从缓存读取
-    if cache_file.exists():
+    # 尝试磁盘缓存（仅在内存不存在时）
+    if not force_refresh and cache_file.exists():
         try:
             with open(cache_file, "r", encoding="utf-8") as f:
-                cached_data = json.load(f)
-            logger.debug("从缓存加载菜单 - %d 个项目", len(cached_data.get("items", [])))
-            return cached_data
+                _MENU_CACHE = json.load(f)
+            _CACHE_TS = time.time()
+            logger.debug("从磁盘缓存加载菜单 - %d 个项目", len(_MENU_CACHE.get("items", [])))
         except (json.JSONDecodeError, IOError) as e:
             logger.warning("缓存文件读取失败: %s，将从 API 重新获取", e)
-    else:
-        logger.info("菜单缓存不存在，从 Loyverse API 获取")
-    
+            _MENU_CACHE = None
+
+    if _MENU_CACHE and not force_refresh:
+        # 仍需要确保 _NAME2ID 已构建
+        if not _NAME2ID:
+            _build_name_index(_MENU_CACHE)
+        return _MENU_CACHE
+
     # 从 API 获取菜单
     async with httpx.AsyncClient() as client:
         try:
@@ -86,15 +118,40 @@ async def get_menu_items(cache_path: str = "menu_data.json") -> Dict[str, Any]:
         if not isinstance(data, dict) or "items" not in data:
             raise ValueError("API 返回的菜单数据格式无效")
         
-        # 保存到缓存
+        # 更新内存缓存 & TS
+        _MENU_CACHE = data
+        _CACHE_TS = time.time()
+
+        # 建立 name → id 索引
+        _build_name_index(data)
+
+        # 写入磁盘缓存（忽略写入失败）
         try:
             with open(cache_file, "w", encoding="utf-8") as f:
                 json.dump(data, f, ensure_ascii=False, indent=2)
-            logger.info("菜单已缓存 - %d 个项目", len(data.get("items", [])))
+            logger.info("菜单已缓存到磁盘 - %d 个项目", len(data.get("items", [])))
         except IOError as e:
             logger.warning("无法保存菜单缓存: %s", e)
         
         return data
+
+
+def _build_name_index(menu_data: Dict[str, Any]) -> None:
+    """(Re)build the global `_NAME2ID` index from fresh menu json."""
+    _NAME2ID.clear()
+    for itm in menu_data.get("items", []):
+        base_key = _normalize_name(itm.get("name", ""))
+        if base_key:
+            _NAME2ID[base_key] = itm.get("id")
+
+        # 把 variants 也加入索引（若有）
+        for var in itm.get("variants", []):
+            # 名称策略：主名 + variant 名
+            var_key = _normalize_name(f"{itm.get('name', '')} {var.get('name', '')}")
+            if var_key:
+                _NAME2ID[var_key] = var.get("id")
+
+    logger.debug("已建立 name→id 索引，共 %d 项", len(_NAME2ID))
 
 
 def _transform_order_to_receipt(order_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -222,14 +279,9 @@ async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
     logger.debug("创建 Loyverse 收据: %s", json.dumps(order_data, ensure_ascii=False))
     
     try:
-        # 获取菜单数据来映射商品名称到 ID
-        menu_data = await get_menu_items()
-        item_name_to_id = {}
-        for item in menu_data.get("items", []):
-            # Store normalized key to id for flexible lookup
-            key = _normalize_name(item.get("name", ""))
-            if key:
-                item_name_to_id[key] = item.get("id")
+        # 确保菜单缓存和索引已构建
+        await get_menu_items()
+        item_name_to_id = _NAME2ID
         
         # 获取默认支付类型
         payment_types = await get_payment_types()
