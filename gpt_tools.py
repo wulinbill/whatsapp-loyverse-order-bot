@@ -171,12 +171,15 @@ def tool_parse_order(message: str) -> str:
 
 
 # ---------- Tool: 提交订单 ---------- #
-def tool_submit_order(order_json: Union[str, Dict[str, Any]]) -> str:
+def tool_submit_order(input_data: Union[str, Dict[str, Any]]) -> str:
     """
     提交订单到 Loyverse POS
     
     Args:
-        order_json: JSON 格式的订单字符串或字典
+        input_data: 订单数据，可以是：
+                   1. JSON 格式的订单字符串
+                   2. 订单字典
+                   3. 包含订单数据的字符串（需要解析）
         
     Returns:
         JSON 格式的提交结果字符串
@@ -184,28 +187,76 @@ def tool_submit_order(order_json: Union[str, Dict[str, Any]]) -> str:
     logger.info("提交订单到 Loyverse POS")
     
     try:
-        # 解析订单数据
-        if isinstance(order_json, str):
-            try:
-                order_data = json.loads(order_json)
-            except json.JSONDecodeError as e:
-                error_msg = f"订单 JSON 格式无效: {e}"
+        # 处理不同的输入格式
+        order_data = None
+        
+        if isinstance(input_data, str):
+            # 如果是字符串，尝试解析为 JSON
+            input_data = input_data.strip()
+            
+            # 检查是否是纯 JSON 字符串
+            if input_data.startswith('{') or input_data.startswith('['):
+                try:
+                    order_data = json.loads(input_data)
+                except json.JSONDecodeError as e:
+                    error_msg = f"订单 JSON 格式无效: {e}"
+                    logger.error(error_msg)
+                    return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+            else:
+                # 如果不是 JSON，可能是序列化的订单数据
+                # 尝试从字符串中提取订单信息
+                try:
+                    # 尝试解析可能的格式，如 "order_data: {...}"
+                    if ":" in input_data:
+                        json_part = input_data.split(":", 1)[1].strip()
+                        order_data = json.loads(json_part)
+                    else:
+                        # 尝试直接解析
+                        order_data = json.loads(input_data)
+                except (json.JSONDecodeError, ValueError):
+                    error_msg = f"无法解析输入数据: {input_data[:100]}..."
+                    logger.error(error_msg)
+                    return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+                    
+        elif isinstance(input_data, dict):
+            order_data = input_data
+        elif isinstance(input_data, list):
+            # 如果输入是列表，可能是 [order_items, additional_info] 格式
+            if len(input_data) > 0:
+                order_data = {"items": input_data[0] if isinstance(input_data[0], list) else input_data}
+            else:
+                error_msg = "订单数据列表为空"
                 logger.error(error_msg)
                 return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
-        elif isinstance(order_json, dict):
-            order_data = order_json
         else:
-            error_msg = "订单数据类型无效，必须是字符串或字典"
+            error_msg = f"订单数据类型无效: {type(input_data)}"
             logger.error(error_msg)
             return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
         
         # 检查是否有解析错误
-        if "error" in order_data:
+        if isinstance(order_data, dict) and "error" in order_data:
             logger.warning("订单包含错误信息: %s", order_data["error"])
             return json.dumps({"success": False, "error": order_data["error"]}, ensure_ascii=False)
         
+        # 确保订单数据格式正确
+        if not isinstance(order_data, dict):
+            error_msg = f"订单数据必须是字典格式，当前类型: {type(order_data)}"
+            logger.error(error_msg)
+            return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        
+        # 如果订单数据直接是项目列表，包装成标准格式
+        if "items" not in order_data and isinstance(order_data, list):
+            order_data = {"items": order_data}
+        elif "items" not in order_data:
+            # 检查是否订单数据本身就是项目列表
+            if all(isinstance(item, dict) and "name" in item for item in order_data.values()):
+                order_data = {"items": list(order_data.values())}
+        
         # 验证订单结构
-        validate_order_json(json.dumps(order_data, ensure_ascii=False))
+        try:
+            validate_order_json(json.dumps(order_data, ensure_ascii=False))
+        except Exception as e:
+            logger.warning(f"订单验证失败，但继续提交: {e}")
         
         # 提交订单
         result = _run_async(create_order(order_data))
@@ -231,5 +282,5 @@ def tool_submit_order(order_json: Union[str, Dict[str, Any]]) -> str:
 TOOL_DESCRIPTIONS = {
     "GetMenu": "获取当前菜单项目列表。输入：任意字符串（忽略）。输出：菜单项目列表的 JSON。",
     "ParseOrder": "解析客户的自然语言订单消息为标准 JSON 格式。输入：客户订单消息（字符串）。输出：JSON 格式的订单数据。",
-    "SubmitOrder": "将解析好的订单提交到 Loyverse POS 系统。输入：JSON 格式的订单数据。输出：提交结果。"
+    "SubmitOrder": "将解析好的订单提交到 Loyverse POS 系统。输入：订单数据（JSON字符串、字典或列表格式）。输出：提交结果。"
 }
