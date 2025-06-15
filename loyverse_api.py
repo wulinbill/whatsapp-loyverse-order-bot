@@ -321,13 +321,13 @@ async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
             quantity = item.get("quantity", 1)
             
             # 查找商品 ID
-            item_id = _find_item_id(item_name, item_name_to_id)
-            if not item_id:
+            variant_id = _find_item_id(item_name, item_name_to_id)
+            if not variant_id:
                 logger.warning("未找到商品 '%s' 的 ID，跳过该项目", item_name)
                 continue
             
             line_item = {
-                "item_id": item_id,
+                "variant_id": variant_id,
                 "quantity": quantity
             }
             
@@ -343,7 +343,7 @@ async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
         if default_payment_type_id:
             receipt_data["payments"] = [{
                 "payment_type_id": default_payment_type_id,
-                "amount": 0  # Loyverse 会自动计算总金额
+                "money_amount": 0  # Loyverse 会自动计算总金额
             }]
         
         # 发送请求创建收据
