@@ -141,15 +141,28 @@ def _build_name_index(menu_data: Dict[str, Any]) -> None:
     _NAME2ID.clear()
     for itm in menu_data.get("items", []):
         base_key = _normalize_name(itm.get("name", ""))
-        if base_key:
-            _NAME2ID[base_key] = itm.get("id")
+        variants = itm.get("variants", []) or []
 
-        # 把 variants 也加入索引（若有）
-        for var in itm.get("variants", []):
-            # 名称策略：主名 + variant 名
-            var_key = _normalize_name(f"{itm.get('name', '')} {var.get('name', '')}")
-            if var_key:
-                _NAME2ID[var_key] = var.get("id")
+        # 确定变体 ID 字段名（API 里常用 id 或 variant_id）
+        def _extract_var_id(obj: Dict[str, Any]):
+            return obj.get("id") or obj.get("variant_id")
+
+        # 如果有 variants，优先把主名映射到第一变体 ID；否则回退到 item.id
+        if base_key:
+            if variants:
+                _NAME2ID[base_key] = _extract_var_id(variants[0])
+            else:
+                _NAME2ID[base_key] = itm.get("id")
+
+        # 把每个变体的组合名称加入索引
+        for var in variants:
+            var_name_raw = var.get("name") or var.get("variant_name") or ""
+            if not var_name_raw:
+                continue
+            var_key = _normalize_name(f"{itm.get('name', '')} {var_name_raw}")
+            var_id = _extract_var_id(var)
+            if var_key and var_id:
+                _NAME2ID[var_key] = var_id
 
     logger.debug("已建立 name→id 索引，共 %d 项", len(_NAME2ID))
 
@@ -298,10 +311,16 @@ async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
         await get_menu_items()
         item_name_to_id = _NAME2ID
         
-        # 获取默认支付类型
+        # 获取默认支付类型（优先选择现金类型）
         payment_types = await get_payment_types()
         default_payment_type_id = None
-        if payment_types.get("payment_types"):
+        for p in payment_types.get("payment_types", []):
+            p_type = p.get("type", "").upper()
+            p_name = p.get("name", "").lower()
+            if p_type == "CASH" or p_name in {"cash", "efectivo", "кеш", "现金"}:
+                default_payment_type_id = p.get("id")
+                break
+        if not default_payment_type_id and payment_types.get("payment_types"):
             default_payment_type_id = payment_types["payment_types"][0].get("id")
         
         # 构建收据数据
