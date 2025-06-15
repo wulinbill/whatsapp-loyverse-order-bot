@@ -248,10 +248,25 @@ def _find_item_id(name: str, name_to_id: Dict[str, str]) -> Optional[str]:
     if norm in name_to_id:
         return name_to_id[norm]
 
-    # 2) Fuzzy match using difflib on keys
-    close = get_close_matches(norm, name_to_id.keys(), n=1, cutoff=0.8)
+    # 2) Fuzzy match using difflib on keys (lower cutoff)
+    close = get_close_matches(norm, name_to_id.keys(), n=1, cutoff=0.75)
     if close:
         return name_to_id[close[0]]
+
+    # 3) Token set containment match (order-insensitive)
+    tokens = set(norm.split())
+    if tokens:
+        for key in name_to_id.keys():
+            if tokens.issubset(set(key.split())):
+                return name_to_id[key]
+
+    # 4) Partial token overlap >= 80 %
+    for key in name_to_id.keys():
+        key_tokens = set(key.split())
+        if key_tokens:
+            overlap = len(tokens & key_tokens) / max(len(tokens), 1)
+            if overlap >= 0.8:
+                return name_to_id[key]
 
     return None
 
