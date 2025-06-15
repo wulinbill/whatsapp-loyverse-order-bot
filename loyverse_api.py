@@ -248,6 +248,12 @@ def _normalize_name(name: str) -> str:
     for sep in ["(", "[", "{" ]:
         if sep in name:
             name = name.split(sep, 1)[0].strip()
+    # NEW: replace common punctuation with spaces so they become individual tokens
+    for punct in ["-", "/", "+", "&", ":", ";", ",", "–", "—"]:
+        name = name.replace(punct, " ")
+    # Collapse multiple consecutive spaces
+    while "  " in name:
+        name = name.replace("  ", " ")
     return name
 
 
