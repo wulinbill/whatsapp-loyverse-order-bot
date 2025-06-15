@@ -1,82 +1,235 @@
-"""LangChain 工具封装模块 - 修复版"""
-import asyncio, json, logging
+"""LangChain 工具封装模块 - 改进版"""
+import asyncio
+import json
+import logging
 from typing import Any, Dict, List, Union
 
 from loyverse_api import get_menu_items, create_order
-from gpt_parser import parse_order, validate_order_json
-from utils.logger import logger
+from gpt_parser import parse_order, validate_order_json, get_menu_item_names
+from utils.logger import get_logger
+
+logger = get_logger(__name__)
 
 
-# ---------- 辅助 ---------- #
-def _run(coro):
+# ---------- 辅助函数 ---------- #
+def _run_async(coro):
     """在同步环境里执行协程，避免事件循环冲突"""
     try:
         return asyncio.run(coro)
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        try:
-            return loop.run_until_complete(coro)
-        finally:
-            loop.close()
+    except RuntimeError as e:
+        if "asyncio.run() cannot be called from a running event loop" in str(e):
+            # 在新线程中创建事件循环
+            import concurrent.futures
+            
+            def run_in_thread():
+                new_loop = asyncio.new_event_loop()
+                try:
+                    asyncio.set_event_loop(new_loop)
+                    return new_loop.run_until_complete(coro)
+                finally:
+                    new_loop.close()
+                    asyncio.set_event_loop(None)
+            
+            with concurrent.futures.ThreadPoolExecutor() as executor:
+                future = executor.submit(run_in_thread)
+                return future.result(timeout=60)
+        else:
+            raise
+
+
+def _extract_menu_names_fallback(menu_data: Dict[str, Any]) -> List[str]:
+    """备用方案：从菜单数据中提取名称"""
+    names = []
+    items = menu_data.get("items", [])
+    
+    for item in items:
+        if isinstance(item, dict):
+            name = (item.get('name') or 
+                   item.get('item_name') or 
+                   item.get('title') or 
+                   item.get('display_name'))
+            if name and isinstance(name, str):
+                names.append(name.strip())
+    
+    return names
 
 
 # ---------- Tool: 获取菜单 ---------- #
-async def _async_get_menu() -> Dict[str, Any]:
-    return await get_menu_items()
-
-
-def tool_get_menu(_input: str = "") -> str:  # ← 必须接收 1 个参数
+def tool_get_menu(dummy_input: str) -> str:
     """
     获取并返回当前菜单 JSON 字符串
-    LangChain 会始终传入一个位置参数（可能为空字符串）
+    
+    Args:
+        dummy_input: 虚拟输入参数（LangChain 单输入工具要求）
+        
+    Returns:
+        JSON 格式的菜单信息字符串
     """
+    logger.info("获取菜单信息")
+    
     try:
-        menu = _run(_async_get_menu())
-        items = menu.get("items", [])
-        names = [i.get("name") for i in items if "name" in i]
-        return json.dumps({"success": True,
-                           "total": len(names),
-                           "items": names}, ensure_ascii=False)
+        menu_data = _run_async(get_menu_items())
+        
+        if not menu_data:
+            error_msg = "无法获取菜单数据"
+            logger.error(error_msg)
+            return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        
+        # 尝试使用原始函数获取菜单名称
+        menu_names = None
+        try:
+            menu_names = get_menu_item_names(menu_data)
+        except Exception as e:
+            logger.warning(f"get_menu_item_names 函数执行失败: {e}")
+        
+        # 如果原始函数失败，使用备用方案
+        if not menu_names:
+            menu_names = _extract_menu_names_fallback(menu_data)
+        
+        if not menu_names:
+            error_msg = "无法从菜单数据中提取有效的项目名称"
+            logger.error(error_msg)
+            return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        
+        logger.info(f"成功获取 {len(menu_names)} 个菜单项目")
+        return json.dumps({
+            "success": True,
+            "total_items": len(menu_names),
+            "menu_items": menu_names
+        }, ensure_ascii=False)
+        
     except Exception as e:
-        logger.exception("获取菜单失败: %s", e)
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+        error_msg = f"获取菜单失败: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
 
 
 # ---------- Tool: 解析订单 ---------- #
 def tool_parse_order(message: str) -> str:
-    """把顾客消息解析为标准订单 JSON"""
+    """
+    把顾客消息解析为标准订单 JSON
+    
+    Args:
+        message: 客户的自然语言订单消息
+        
+    Returns:
+        JSON 格式的订单字符串，或错误信息
+    """
+    if not message or not isinstance(message, str):
+        error_msg = "订单消息不能为空"
+        logger.warning(error_msg)
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
+    
+    message = message.strip()
+    if not message:
+        error_msg = "订单消息不能为空"
+        logger.warning(error_msg)
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
+    
+    logger.info("解析订单消息: %s", message[:100])
+    
     try:
-        menu = _run(_async_get_menu())
-        names = [i["name"] for i in menu.get("items", [])]
-        order_json = parse_order(message, names)
+        # 获取菜单数据
+        menu_data = _run_async(get_menu_items())
+        
+        if not menu_data:
+            error_msg = "无法获取菜单数据"
+            logger.error(error_msg)
+            return json.dumps({"error": error_msg}, ensure_ascii=False)
+        
+        # 尝试使用原始函数获取菜单名称
+        menu_names = None
+        try:
+            menu_names = get_menu_item_names(menu_data)
+        except Exception as e:
+            logger.warning(f"get_menu_item_names 函数执行失败: {e}")
+        
+        # 如果原始函数失败，使用备用方案
+        if not menu_names:
+            menu_names = _extract_menu_names_fallback(menu_data)
+        
+        if not menu_names:
+            error_msg = "无法从菜单数据中提取有效的项目名称"
+            logger.error(error_msg)
+            return json.dumps({"error": error_msg}, ensure_ascii=False)
+        
+        logger.info(f"成功获取 {len(menu_names)} 个菜单项目名称")
+        
+        # 调用 GPT 解析
+        order_json = parse_order(message, menu_names)
+        
+        # 验证解析结果
         validate_order_json(order_json)
+        
+        logger.info("订单解析成功")
         return order_json
+        
     except Exception as e:
-        logger.exception("订单解析失败: %s", e)
-        return json.dumps({"error": str(e)}, ensure_ascii=False)
+        error_msg = f"订单解析失败: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
 # ---------- Tool: 提交订单 ---------- #
-async def _async_submit(order: Dict[str, Any]):
-    return await create_order(order)
-
-
-def tool_submit_order(order: Union[str, Dict[str, Any]]) -> str:
-    """提交订单到 Loyverse POS"""
+def tool_submit_order(order_json: Union[str, Dict[str, Any]]) -> str:
+    """
+    提交订单到 Loyverse POS
+    
+    Args:
+        order_json: JSON 格式的订单字符串或字典
+        
+    Returns:
+        JSON 格式的提交结果字符串
+    """
+    logger.info("提交订单到 Loyverse POS")
+    
     try:
-        if isinstance(order, str):
-            order = json.loads(order)
-        validate_order_json(json.dumps(order, ensure_ascii=False))
-        res = _run(_async_submit(order))
-        return json.dumps({"success": True, "result": res}, ensure_ascii=False)
+        # 解析订单数据
+        if isinstance(order_json, str):
+            try:
+                order_data = json.loads(order_json)
+            except json.JSONDecodeError as e:
+                error_msg = f"订单 JSON 格式无效: {e}"
+                logger.error(error_msg)
+                return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        elif isinstance(order_json, dict):
+            order_data = order_json
+        else:
+            error_msg = "订单数据类型无效，必须是字符串或字典"
+            logger.error(error_msg)
+            return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        
+        # 检查是否有解析错误
+        if "error" in order_data:
+            logger.warning("订单包含错误信息: %s", order_data["error"])
+            return json.dumps({"success": False, "error": order_data["error"]}, ensure_ascii=False)
+        
+        # 验证订单结构
+        validate_order_json(json.dumps(order_data, ensure_ascii=False))
+        
+        # 提交订单
+        result = _run_async(create_order(order_data))
+        
+        logger.info("订单提交成功")
+        return json.dumps({
+            "success": True,
+            "message": "订单提交成功",
+            "sale_id": result.get("sale_id"),
+            "order_data": order_data
+        }, ensure_ascii=False)
+        
     except Exception as e:
-        logger.exception("订单提交失败: %s", e)
-        return json.dumps({"success": False, "error": str(e)}, ensure_ascii=False)
+        error_msg = f"订单提交失败: {str(e)}"
+        logger.error(error_msg, exc_info=True)
+        return json.dumps({
+            "success": False,
+            "error": error_msg
+        }, ensure_ascii=False)
 
 
-# ---------- 描述，供 LangChain 注册 ---------- #
+# ---------- 工具描述，供 LangChain 注册 ---------- #
 TOOL_DESCRIPTIONS = {
-    "GetMenu": "获取当前菜单列表；无输入，返回 JSON",
-    "ParseOrder": "解析顾客自然语言为订单 JSON；输入: 顾客消息",
-    "SubmitOrder": "提交订单到 Loyverse；输入: 订单 JSON"
+    "GetMenu": "获取当前菜单项目列表。输入：任意字符串（忽略）。输出：菜单项目列表的 JSON。",
+    "ParseOrder": "解析客户的自然语言订单消息为标准 JSON 格式。输入：客户订单消息（字符串）。输出：JSON 格式的订单数据。",
+    "SubmitOrder": "将解析好的订单提交到 Loyverse POS 系统。输入：JSON 格式的订单数据。输出：提交结果。"
 }
