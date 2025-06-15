@@ -151,7 +151,7 @@ def tool_submit_order(order_json: Union[str, Dict[str, Any]]) -> str:
         }, ensure_ascii=False)
 
 
-def tool_get_menu() -> str:
+def tool_get_menu(_input: str = "") -> str:
     """LangChain 工具：获取当前菜单信息
     
     Returns:
