@@ -1,4 +1,4 @@
-"""Loyverse POS API 封装模块"""
+"""Loyverse POS API 封装模块 - 修复版"""
 import os
 import httpx
 import json
@@ -95,8 +95,70 @@ async def get_menu_items(cache_path: str = "menu_data.json") -> Dict[str, Any]:
         return data
 
 
+def _transform_order_to_receipt(order_data: Dict[str, Any]) -> Dict[str, Any]:
+    """将订单数据转换为 Loyverse 收据格式
+    
+    Args:
+        order_data: 原始订单数据
+        
+    Returns:
+        符合 Loyverse API 格式的收据数据
+    """
+    receipt_data = {
+        "store_id": STORE_ID,
+        "line_items": [],
+        "payments": [
+            {
+                "payment_type_id": None,  # 需要从 API 获取支付类型 ID
+                "amount": 0  # 会在后面计算
+            }
+        ],
+        "source": "API",
+        "note": order_data.get("note", "")
+    }
+    
+    total_amount = 0
+    
+    # 转换订单项目为收据行项目
+    for item in order_data.get("items", []):
+        line_item = {
+            "item_id": None,  # 需要通过名称查找 ID
+            "quantity": item.get("quantity", 1),
+            "note": item.get("note", "")
+        }
+        
+        # 这里需要通过菜单数据查找 item_id
+        # 暂时使用名称，后续需要实现名称到ID的映射
+        line_item["item_name"] = item.get("name", "")
+        
+        receipt_data["line_items"].append(line_item)
+    
+    return receipt_data
+
+
+async def get_payment_types() -> Dict[str, Any]:
+    """获取支付类型列表
+    
+    Returns:
+        支付类型数据字典
+    """
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.get(
+                f"{LOYVERSE_API_URL}/payment_types",
+                headers=await _get_headers(),
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as e:
+            logger.error("获取支付类型失败，HTTP状态码: %d, 响应: %s", 
+                        e.response.status_code, e.response.text)
+            raise
+
+
 async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
-    """创建订单
+    """创建订单（收据）
     
     Args:
         order_data: 订单数据字典
@@ -111,52 +173,107 @@ async def create_order(order_data: Dict[str, Any]) -> Dict[str, Any]:
     if not isinstance(order_data, dict):
         raise ValueError("订单数据必须是字典类型")
     
-    # 自动注入 store_id
-    order_data = order_data.copy()  # 避免修改原始数据
-    order_data.setdefault("store_id", STORE_ID)
-    
     # 验证必要字段
     if "items" not in order_data or not order_data["items"]:
         raise ValueError("订单必须包含至少一个商品")
     
-    logger.debug("创建 Loyverse 订单: %s", json.dumps(order_data, ensure_ascii=False))
+    logger.debug("创建 Loyverse 收据: %s", json.dumps(order_data, ensure_ascii=False))
     
-    async with httpx.AsyncClient() as client:
-        try:
+    try:
+        # 获取菜单数据来映射商品名称到 ID
+        menu_data = await get_menu_items()
+        item_name_to_id = {}
+        for item in menu_data.get("items", []):
+            item_name_to_id[item.get("name", "").lower()] = item.get("id")
+        
+        # 获取默认支付类型
+        payment_types = await get_payment_types()
+        default_payment_type_id = None
+        if payment_types.get("payment_types"):
+            default_payment_type_id = payment_types["payment_types"][0].get("id")
+        
+        # 构建收据数据
+        receipt_data = {
+            "store_id": STORE_ID,
+            "line_items": [],
+            "payments": [],
+            "source": "API",
+            "note": order_data.get("note", "")
+        }
+        
+        total_amount = 0
+        
+        # 处理订单项目
+        for item in order_data["items"]:
+            item_name = item.get("name", "").strip()
+            quantity = item.get("quantity", 1)
+            
+            # 查找商品 ID
+            item_id = item_name_to_id.get(item_name.lower())
+            if not item_id:
+                logger.warning("未找到商品 '%s' 的 ID，跳过该项目", item_name)
+                continue
+            
+            line_item = {
+                "item_id": item_id,
+                "quantity": quantity
+            }
+            
+            if item.get("note"):
+                line_item["note"] = item["note"]
+            
+            receipt_data["line_items"].append(line_item)
+        
+        if not receipt_data["line_items"]:
+            raise ValueError("没有有效的商品项目可以创建收据")
+        
+        # 添加默认支付方式（现金）
+        if default_payment_type_id:
+            receipt_data["payments"] = [{
+                "payment_type_id": default_payment_type_id,
+                "amount": 0  # Loyverse 会自动计算总金额
+            }]
+        
+        # 发送请求创建收据
+        async with httpx.AsyncClient() as client:
             response = await client.post(
-                f"{LOYVERSE_API_URL}/sales",
+                f"{LOYVERSE_API_URL}/receipts",  # 使用正确的端点
                 headers=await _get_headers(),
-                json=order_data,
+                json=receipt_data,
                 timeout=15.0,
             )
             response.raise_for_status()
-        except httpx.HTTPStatusError as e:
-            logger.error("创建订单失败，HTTP状态码: %d, 响应: %s", 
-                        e.response.status_code, e.response.text)
-            # 尝试解析错误详情
-            try:
-                error_detail = e.response.json()
-                logger.error("错误详情: %s", error_detail)
-            except:
-                pass
-            raise
-        except httpx.TimeoutException as e:
-            logger.error("创建订单超时")
-            raise
-        
-        response_data = response.json()
-        
-        # 验证响应
-        if not isinstance(response_data, dict):
-            raise ValueError("API 返回的订单数据格式无效")
-        
-        sale_id = response_data.get("sale_id")
-        if sale_id:
-            logger.info("订单创建成功 - ID: %s", sale_id)
-        else:
-            logger.warning("订单创建成功但未返回 sale_id")
-        
-        return response_data
+            
+            response_data = response.json()
+            
+            # 验证响应
+            if not isinstance(response_data, dict):
+                raise ValueError("API 返回的收据数据格式无效")
+            
+            receipt_id = response_data.get("id")
+            if receipt_id:
+                logger.info("收据创建成功 - ID: %s", receipt_id)
+            else:
+                logger.warning("收据创建成功但未返回 ID")
+            
+            return response_data
+            
+    except httpx.HTTPStatusError as e:
+        logger.error("创建收据失败，HTTP状态码: %d, 响应: %s", 
+                    e.response.status_code, e.response.text)
+        # 尝试解析错误详情
+        try:
+            error_detail = e.response.json()
+            logger.error("错误详情: %s", error_detail)
+        except:
+            pass
+        raise
+    except httpx.TimeoutException as e:
+        logger.error("创建收据超时")
+        raise
+    except Exception as e:
+        logger.error("创建收据时发生未知错误: %s", e)
+        raise
 
 
 async def get_store_info() -> Optional[Dict[str, Any]]:

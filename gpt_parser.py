@@ -1,6 +1,7 @@
-"""GPT-4o 订单解析模块 - 改进版本"""
+"""GPT-4o 订单解析模块 - 修复版本"""
 import os
 import json
+import re
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 from dotenv import load_dotenv
@@ -30,6 +31,32 @@ except IOError as e:
 
 if not SYSTEM_PROMPT:
     raise RuntimeError("系统提示模板为空")
+
+
+def _clean_gpt_response(content: str) -> str:
+    """清理 GPT 响应，移除 markdown 代码块标记
+    
+    Args:
+        content: GPT 的原始响应内容
+        
+    Returns:
+        清理后的 JSON 字符串
+    """
+    content = content.strip()
+    
+    # 移除 markdown 代码块标记
+    if content.startswith("```json"):
+        content = content[7:]  # 移除开头的 ```json
+    elif content.startswith("```"):
+        content = content[3:]   # 移除开头的 ```
+    
+    if content.endswith("```"):
+        content = content[:-3]  # 移除结尾的 ```
+    
+    # 移除多余的空白字符
+    content = content.strip()
+    
+    return content
 
 
 def parse_order(message: str, menu_items: List[str]) -> str:
@@ -80,12 +107,15 @@ def parse_order(message: str, menu_items: List[str]) -> str:
         if not content:
             raise RuntimeError("GPT API 返回空内容")
         
-        content = content.strip()
         logger.debug("GPT 原始输出: %s", content)
+        
+        # 清理响应内容
+        cleaned_content = _clean_gpt_response(content)
+        logger.debug("清理后的内容: %s", cleaned_content)
         
         # 验证返回的 JSON 格式
         try:
-            parsed_json = json.loads(content)
+            parsed_json = json.loads(cleaned_content)
             
             # 基本结构验证
             if not isinstance(parsed_json, dict):
@@ -112,11 +142,24 @@ def parse_order(message: str, menu_items: List[str]) -> str:
                     raise ValueError(f"订单项目 {i} 的数量必须是正数")
             
             logger.info("成功解析订单，包含 %d 个项目", len(parsed_json["items"]))
-            return content
+            return cleaned_content
             
         except json.JSONDecodeError as e:
-            logger.error("GPT 返回的内容不是有效 JSON: %s", content)
-            raise json.JSONDecodeError(f"GPT 返回无效 JSON: {e}", content, 0)
+            logger.error("清理后的内容仍不是有效 JSON: %s", cleaned_content)
+            # 尝试进一步清理
+            try:
+                # 尝试提取可能的 JSON 部分
+                json_match = re.search(r'\{.*\}', cleaned_content, re.DOTALL)
+                if json_match:
+                    potential_json = json_match.group(0)
+                    logger.debug("尝试提取的 JSON: %s", potential_json)
+                    parsed_json = json.loads(potential_json)
+                    logger.info("成功提取并解析 JSON")
+                    return potential_json
+                else:
+                    raise json.JSONDecodeError(f"无法从响应中提取有效 JSON: {e}", cleaned_content, 0)
+            except json.JSONDecodeError:
+                raise json.JSONDecodeError(f"GPT 返回无效 JSON: {e}", cleaned_content, 0)
         
     except Exception as e:
         if isinstance(e, (ValueError, json.JSONDecodeError)):
