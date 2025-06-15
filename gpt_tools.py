@@ -1,7 +1,7 @@
-"""LangChain 工具封装模块"""
+"""LangChain 工具封装模块 - 修复版本"""
 import asyncio
 import json
-from typing import Any, Dict, Union, Optional
+from typing import Any, Dict, Union, Optional, List
 from loyverse_api import get_menu_items, create_order
 from gpt_parser import parse_order, validate_order_json, get_menu_item_names
 from utils.logger import get_logger
@@ -49,6 +49,48 @@ def _run_async(coro):
             raise
 
 
+def _extract_menu_names_fallback(menu_data: Dict[str, Any]) -> List[str]:
+    """备用方案：手动从菜单数据中提取名称
+    
+    Args:
+        menu_data: 菜单数据字典
+        
+    Returns:
+        菜单项目名称列表
+    """
+    names = []
+    
+    if not isinstance(menu_data, dict):
+        logger.warning("菜单数据不是字典格式")
+        return names
+    
+    items = menu_data.get('items', [])
+    if not items:
+        logger.warning("菜单数据中没有 'items' 字段或为空")
+        return names
+    
+    logger.info(f"尝试从 {len(items)} 个菜单项目中提取名称")
+    
+    for i, item in enumerate(items):
+        if not isinstance(item, dict):
+            logger.warning(f"菜单项目 {i} 不是字典格式")
+            continue
+        
+        # 尝试不同的名称字段
+        name = (item.get('name') or 
+                item.get('item_name') or 
+                item.get('title') or 
+                item.get('display_name'))
+        
+        if name and isinstance(name, str):
+            names.append(name.strip())
+        else:
+            logger.warning(f"菜单项目 {i} 没有有效的名称字段: {list(item.keys())}")
+    
+    logger.info(f"成功提取 {len(names)} 个菜单名称")
+    return names
+
+
 def tool_parse_order(message: str) -> str:
     """LangChain 工具：解析客户订单消息为 JSON 格式
     
@@ -73,18 +115,44 @@ def tool_parse_order(message: str) -> str:
     
     try:
         # 获取菜单数据
+        logger.debug("开始获取菜单数据...")
         menu_data: Dict[str, Any] = _run_async(get_menu_items())
-        menu_names = get_menu_item_names(menu_data)
+        logger.debug(f"获取到菜单数据，类型: {type(menu_data)}")
         
-        if not menu_names:
-            error_msg = "无法获取菜单数据或菜单为空"
+        if not menu_data:
+            error_msg = "无法获取菜单数据"
             logger.error(error_msg)
             return json.dumps({"error": error_msg}, ensure_ascii=False)
         
+        # 尝试使用原始的 get_menu_item_names 函数
+        menu_names = None
+        try:
+            logger.debug("尝试使用 get_menu_item_names 函数...")
+            menu_names = get_menu_item_names(menu_data)
+            logger.debug(f"get_menu_item_names 返回: {type(menu_names)}, 长度: {len(menu_names) if menu_names else 'None'}")
+        except Exception as e:
+            logger.warning(f"get_menu_item_names 函数执行失败: {e}")
+        
+        # 如果原始函数失败或返回空结果，使用备用方案
+        if not menu_names:
+            logger.info("使用备用方案提取菜单名称...")
+            menu_names = _extract_menu_names_fallback(menu_data)
+        
+        if not menu_names:
+            error_msg = "无法从菜单数据中提取有效的项目名称"
+            logger.error(error_msg)
+            logger.error(f"菜单数据结构: {json.dumps(menu_data, ensure_ascii=False, indent=2)[:500]}...")
+            return json.dumps({"error": error_msg}, ensure_ascii=False)
+        
+        logger.info(f"成功获取 {len(menu_names)} 个菜单项目名称")
+        logger.debug(f"菜单项目名称前5个: {menu_names[:5]}")
+        
         # 调用 GPT 解析
+        logger.debug("开始调用 GPT 解析订单...")
         order_json = parse_order(message, menu_names)
         
         # 验证解析结果
+        logger.debug("验证解析结果...")
         validate_order_json(order_json)
         
         logger.info("订单解析成功")
@@ -161,7 +229,17 @@ def tool_get_menu(_input: str = "") -> str:
     
     try:
         menu_data = _run_async(get_menu_items())
-        menu_names = get_menu_item_names(menu_data)
+        
+        # 尝试使用原始函数获取菜单名称
+        menu_names = None
+        try:
+            menu_names = get_menu_item_names(menu_data)
+        except Exception as e:
+            logger.warning(f"get_menu_item_names 函数执行失败: {e}")
+        
+        # 如果原始函数失败，使用备用方案
+        if not menu_names:
+            menu_names = _extract_menu_names_fallback(menu_data)
         
         return json.dumps({
             "success": True,
