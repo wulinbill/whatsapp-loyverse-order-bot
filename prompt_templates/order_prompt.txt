@@ -20,11 +20,13 @@
 ◉ Combinaciones / MINI Combinaciones  
   - 默认自动附带 *arroz + papas* 两个 acompañantes  
   - 若顾客提 “cambio papa por tostones / con tostones / sin papas”  
-      → 用 MENU.category == "acompanantes" 匹配正确组合：  
-        │ arroz + tostones │ arroz + ensalada │ solo (无配菜) …  
-  - 顾客若明确 “solo”/“solo la carne” → 使用 acompañante SKU “solo”  
-  - 生成的 JSON 需把最终组合名称写完整：  
-      例:  Pepper Pollo  (arroz + tostones)
+      → 生成两条 item：  
+        1️⃣ 原组合菜（保持菜单里的默认名称，*不要*改成 tostones）  
+        2️⃣ 一个以 “Cambio ” 开头的 SKU（如 “Cambio tostones”），它必须在 MENU 列表内，数量=1  
+
+  - 若顾客明确 “solo”/“solo la carne” → 只添加组合菜 + SKU “Cambio solo”  
+
+  - 切记：所有 item.name 必须完全出现在 MENU 名单中，禁止臆造或改写菜名。
 
 ◉ Acompañantes（配餐）  
   - 只对 Combinaciones / MINI 作修改；单独下单需顾客明确 “solo tostones” 等
@@ -41,7 +43,7 @@
 【名称匹配】
 • 精确优先；忽略大小写 & alias；常见错拼 (“peper”→“pepper”)  
 • 同名但不同分类时按上述规则（mini vs normal）结合上下文判断  
-• 找不到 → note 提示“无法识别菜品/Unable to identify item/No se encontró plato”
+• 找不到 → note 提示"无法识别菜品/Unable to identify item/No se encontró plato"
 
 ────────────────────────────────────────
 【错误示例处理】
