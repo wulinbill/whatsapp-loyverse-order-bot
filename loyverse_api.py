@@ -9,6 +9,7 @@ from utils.logger import get_logger
 from unicodedata import normalize
 from difflib import get_close_matches
 import time
+import re  # NEW: for alias generation regex
 
 logger = get_logger(__name__)
 
@@ -143,6 +144,33 @@ def _build_name_index(menu_data: Dict[str, Any]) -> None:
         base_key = _normalize_name(itm.get("name", ""))
         variants = itm.get("variants", []) or []
 
+        # --- BEGIN extra alias generation ---
+        # Prepare a list to collect additional aliases that map to the same id
+        extra_aliases: list[str] = []
+
+        raw_name = itm.get("name", "") or ""
+        # 1) Strip leading "Combinacion" / "Combinaciones" (with optional accents) prefixes
+        match = re.match(r"(?i)\s*combina(?:c|ci[oó]n|ciones)?\s+(.*)", raw_name)
+        if match:
+            alias_body = match.group(1) or ""
+            extra_aliases.append(alias_body.strip())
+
+        # 2) Remove common acompañante suffixes like "(arroz + papa frita)" or "arroz + papa frita"
+        no_parentheses = re.sub(r"\([^\)]*\)", "", raw_name).strip()
+        # Remove explicit side dish tail if exists
+        no_side_suffix = re.sub(r"(?i)\s*arroz\s*\+\s*(papa frita|tostones|ensalada|papas)\s*", "", no_parentheses).strip()
+        if no_side_suffix and no_side_suffix != raw_name:
+            extra_aliases.append(no_side_suffix)
+
+        # 3) For items that start with "Cambio ", add the alias without the prefix so that
+        #    parser can ask for just the dish name (e.g., "tostones")
+        if raw_name.lower().startswith("cambio"):
+            extra_aliases.append(raw_name[6:].strip())
+
+        # Normalize all collected aliases
+        extra_aliases = [_normalize_name(a) for a in extra_aliases if a]
+        # --- END extra alias generation ---
+
         # 确定变体 ID 字段名（API 里常用 id 或 variant_id）
         def _extract_var_id(obj: Dict[str, Any]):
             return obj.get("id") or obj.get("variant_id")
@@ -163,6 +191,12 @@ def _build_name_index(menu_data: Dict[str, Any]) -> None:
             var_id = _extract_var_id(var)
             if var_key and var_id:
                 _NAME2ID[var_key] = var_id
+
+        # Add alias mappings for the base item id (first variant or item itself)
+        main_id = _extract_var_id(variants[0]) if variants else itm.get("id")
+        for alias in extra_aliases:
+            if alias and main_id:
+                _NAME2ID[alias] = main_id
 
     logger.debug("已建立 name→id 索引，共 %d 项", len(_NAME2ID))
 
