@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any, Dict, List, Union
 
-from loyverse_api import get_menu_items, create_order
+from loyverse_api import get_menu_items, create_order, get_name_to_id_mapping
 from gpt_parser import parse_order, validate_order_json, get_menu_item_names
 from utils.logger import get_logger
 
@@ -86,10 +86,19 @@ def tool_get_menu(dummy_input: str) -> str:
         if not menu_names:
             menu_names = _extract_menu_names_fallback(menu_data)
         
+        # ---- NEW: append alias names from name→id index so GPT sees simplified variants ----
+        try:
+            alias_names = list(get_name_to_id_mapping().keys())
+            # prettify alias names (capitalize words) to match user style
+            alias_pretty = [" ".join([w.capitalize() for w in a.split()]) for a in alias_names]
+            menu_names = list({*menu_names, *alias_names, *alias_pretty})
+        except Exception as _e:
+            logger.debug("无法加载别名列表: %s", _e)
+        
         if not menu_names:
             error_msg = "无法从菜单数据中提取有效的项目名称"
             logger.error(error_msg)
-            return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+            return json.dumps({"error": error_msg}, ensure_ascii=False)
         
         logger.info(f"成功获取 {len(menu_names)} 个菜单项目")
         return json.dumps({
@@ -147,6 +156,15 @@ def tool_parse_order(message: str) -> str:
         # 如果原始函数失败，使用备用方案
         if not menu_names:
             menu_names = _extract_menu_names_fallback(menu_data)
+        
+        # ---- NEW: append alias names from name→id index so GPT sees simplified variants ----
+        try:
+            alias_names = list(get_name_to_id_mapping().keys())
+            # prettify alias names (capitalize words) to match user style
+            alias_pretty = [" ".join([w.capitalize() for w in a.split()]) for a in alias_names]
+            menu_names = list({*menu_names, *alias_names, *alias_pretty})
+        except Exception as _e:
+            logger.debug("无法加载别名列表: %s", _e)
         
         if not menu_names:
             error_msg = "无法从菜单数据中提取有效的项目名称"
@@ -223,6 +241,12 @@ def tool_submit_order(order_json: str) -> str:
         except Exception as e:
             error_msg = f"订单验证失败: {e}"
             logger.error(error_msg)
+            return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
+        
+        # NEW: 若 items 为空则直接返回，不调用 POS
+        if not order_data.get("items"):
+            error_msg = "未能识别任何有效商品，请检查菜单名称或重新下单"
+            logger.warning(error_msg)
             return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
         
         # 提交订单
