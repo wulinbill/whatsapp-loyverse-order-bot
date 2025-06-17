@@ -198,6 +198,25 @@ def _build_name_index(menu_data: Dict[str, Any]) -> None:
             if alias and main_id:
                 _NAME2ID[alias] = main_id
 
+        # ------------- Extract alias from description -----------------
+        desc_raw = (itm.get("description") or "")
+        if desc_raw:
+            # Strip HTML tags if any
+            desc_text = re.sub(r"<[^>]+>", " ", desc_raw)
+            # Look for "Alias:" or "alias：" marker
+            alias_match = re.search(r"alias[:：]\s*(.*)", desc_text, flags=re.IGNORECASE)
+            if alias_match:
+                alias_segment = alias_match.group(1)
+                # Split by common delimiters
+                for a in re.split(r"[,，/；;]", alias_segment):
+                    a = a.strip()
+                    if not a:
+                        continue
+                    alias_key = _normalize_name(a)
+                    if alias_key and main_id:
+                        _NAME2ID[alias_key] = main_id
+        # --------------------------------------------------------------
+
     logger.debug("已建立 name→id 索引，共 %d 项", len(_NAME2ID))
 
 
