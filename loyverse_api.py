@@ -154,6 +154,11 @@ def _build_name_index(menu_data: Dict[str, Any]) -> None:
         if match:
             alias_body = match.group(1) or ""
             extra_aliases.append(alias_body.strip())
+            # mini & mini combinacion variations
+            if alias_body:
+                extra_aliases.append(f"mini {alias_body.strip()}")
+                extra_aliases.append(f"mini combinacion {alias_body.strip()}")
+                extra_aliases.append(f"mini combinación {alias_body.strip()}")
 
         # 2) Remove common acompañante suffixes like "(arroz + papa frita)" or "arroz + papa frita"
         no_parentheses = re.sub(r"\([^\)]*\)", "", raw_name).strip()
