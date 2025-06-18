@@ -215,37 +215,30 @@ def parse_order(message: str, menu_items: List[str]) -> str:
             
         except json.JSONDecodeError as e:
             logger.error("清理后的内容仍不是有效 JSON: %s", cleaned_content)
-            
-            # 尝试更积极的JSON提取
-            try:
-                # 查找所有可能的JSON对象
-                json_patterns = [
-                    r'\{[^{}]*"items"[^{}]*\[[^\]]*\][^{}]*\}',  # 简单JSON
-                    r'\{.*?"items".*?\[.*?\].*?\}',              # 更复杂的JSON
-                ]
-                
-                for pattern in json_patterns:
-                    matches = re.findall(pattern, cleaned_content, re.DOTALL)
-                    for match in matches:
-                        try:
-                            potential_json = json.loads(match)
-                            _validate_order_structure(potential_json)
-                            logger.info("成功提取并验证 JSON")
-                            return match
-                        except (json.JSONDecodeError, ValueError):
-                            continue
-                
-                # 如果所有方法都失败，返回错误格式
-                error_response = {
-                    "items": [],
-                    "note": "解析失败，请重新下单 / Parse failed, please reorder / Análisis falló, vuelva a ordenar"
-                }
-                logger.warning("所有JSON提取方法失败，返回错误响应")
-                return json.dumps(error_response, ensure_ascii=False)
-                
-            except Exception as extract_error:
-                logger.error("JSON提取过程出错: %s", extract_error)
-                raise json.JSONDecodeError(f"GPT 返回无效 JSON: {e}", cleaned_content, 0)
+
+            # ---- attempt auto-patch for missing closing brace or note ----
+            patched = None
+            if cleaned_content.strip().startswith("{") and '"items"' in cleaned_content:
+                # ensure it ends with '}', if not add
+                body = cleaned_content.strip()
+                if not body.rstrip().endswith('}'):  # missing final brace
+                    body = body.rstrip() + '}'
+                # add note field if absent
+                if '"note"' not in body:
+                    # remove trailing } then append note
+                    body = body.rstrip('}')
+                    if body.endswith(','):
+                        body = body[:-1]
+                    body += ', "note": "" }'
+                patched = body
+                try:
+                    parsed_json = json.loads(patched)
+                    _validate_order_structure(parsed_json)
+                    logger.info("自动修补 JSON 成功")
+                    return json.dumps(parsed_json, ensure_ascii=False)
+                except Exception:
+                    patched = None
+            # ---- end patch ----
         
     except Exception as e:
         if isinstance(e, (ValueError, json.JSONDecodeError)):
