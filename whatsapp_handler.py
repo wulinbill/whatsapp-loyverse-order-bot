@@ -4,14 +4,94 @@ from typing import Optional, Dict, Any
 from fastapi import Request
 from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
-from langchain_agent import get_agent, cleanup_old_memories
 from utils.logger import get_logger
+from utils.session_store import get_session, reset_session
+from loyverse_api import create_customer, create_order
+from gpt_tools import tool_parse_order, tool_get_menu
+import json
 
 logger = get_logger(__name__)
 
 # 全局计数器，用于定期清理内存
 _request_counter = 0
-_CLEANUP_INTERVAL = 100  # 每100个请求清理一次内存
+_CLEANUP_INTERVAL = 100
+
+# ---------------- Conversation flow -----------------
+TERMINATION_KEYWORDS = {"no", "nada", "eso es todo", "listo", "ya"}
+
+def _is_finish_msg(text: str) -> bool:
+    t = text.lower().strip()
+    return any(t.startswith(k) or t == k for k in TERMINATION_KEYWORDS)
+
+
+def _items_to_text(items):
+    lines = []
+    for it in items:
+        lines.append(f"- {it['name']} x{it.get('quantity', 1)}")
+    return "\n".join(lines)
+
+
+async def _process_business_logic(user_id: str, user_message: str) -> str:
+    """核心对话流程，基于 session_store 阶段机"""
+    sess = get_session(user_id)
+    stage = sess["stage"]
+
+    # Stage 1: Greeting
+    if stage == "GREETING":
+        sess["stage"] = "CAPTURE"
+        return "Hola, restaurante KongFood. ¿Qué desea ordenar hoy?"
+
+    # Stage 2: Capture dishes loop
+    if stage == "CAPTURE":
+        if _is_finish_msg(user_message):
+            if not sess["items"]:
+                return "Aún no tengo ningún plato registrado. ¿Podría indicarme qué desea?"
+            sess["stage"] = "NAME"
+            return "Para finalizar, ¿podría indicarme su nombre, por favor?"
+
+        # call parse_order
+        order_json = tool_parse_order(user_message)
+        try:
+            data = json.loads(order_json)
+        except Exception:
+            data = {}
+        items = data.get("items", []) if isinstance(data, dict) else []
+        if not items:
+            return "Disculpe, ¿podría aclararlo, por favor?"
+        sess["items"].extend(items)
+        first_item = items[0]
+        return f"Perfecto, {first_item['name']} x{first_item.get('quantity',1)}. ¿Algo más?"
+
+    # Stage 3: NAME
+    if stage == "NAME":
+        name = user_message.strip().title()
+        sess["name"] = name
+        customer_id = await create_customer(name=name, phone=user_id)
+        sess["customer_id"] = customer_id
+        sess["stage"] = "CONFIRM"
+        # proceed to confirm immediately
+
+    if stage == "CONFIRM":
+        # build order_data
+        order_data = {
+            "items": sess["items"],
+            "note": "Pedido vía WhatsApp bot"
+        }
+        result = await create_order(order_data)
+        total = result.get("total_money_amount") if isinstance(result, dict) else None
+        mains = [it for it in sess["items"] if it["name"].split()[0].lower() not in {"acompanantes", "aparte", "extra", "salsa", "no", "poco"}]
+        mins = 15 if len(mains) >= 3 else 10
+        lista = _items_to_text(sess["items"])
+        sess["stage"] = "DONE"
+        return (
+            f"Gracias, {sess['name']}. Confirmo:\n{lista}\n"
+            f"Total con impuesto: ${total if total else 'N/A'}.\n"
+            f"Su orden estará lista en {mins} minutos. ¡Muchas gracias!"
+        )
+
+    # DONE or fallback
+    reset_session(user_id)
+    return "¡Muchas gracias! Si desea hacer otra orden, dígame por favor."
 
 
 def _extract_user_id(form_data: Dict[str, Any]) -> str:
@@ -103,33 +183,14 @@ async def handle_whatsapp_message(request: Request) -> Response:
         
         # 获取用户专属的 Agent 并处理消息
         try:
-            agent = get_agent(user_id)
-            
-            # 在工作线程中运行 Agent，避免阻塞事件循环
-            reply = await asyncio.to_thread(agent.run, user_message)
-            
-            if not reply or not isinstance(reply, str):
-                logger.warning("Agent 返回了无效的回复: %s", reply)
-                reply = "抱歉，我现在无法处理您的请求。请稍后再试。"
-            
-            reply = reply.strip()
-            logger.info("用户 %s 的回复: %s", user_id, reply[:100])
-            
+            reply = await _process_business_logic(user_id, user_message)
         except Exception as e:
-            logger.error("Agent 处理消息失败 (用户: %s): %s", user_id, e, exc_info=True)
-            reply = (
-                "抱歉，处理您的订单时遇到了问题。请检查您的订单格式或稍后再试。\n"
-                "如果问题持续存在，请联系客服。"
-            )
+            logger.error("业务流程处理失败 (用户: %s): %s", user_id, e, exc_info=True)
+            reply = "Lo siento, hubo un error al procesar su pedido. Por favor, inténtelo de nuevo más tarde."
         
         # 定期清理内存
         _request_counter += 1
-        if _request_counter % _CLEANUP_INTERVAL == 0:
-            try:
-                cleanup_old_memories()
-            except Exception as e:
-                logger.warning("清理内存失败: %s", e)
-        
+
         # 创建 TwiML 响应
         twiml_response = MessagingResponse()
         twiml_response.message(reply)

@@ -484,3 +484,26 @@ async def get_store_info() -> Optional[Dict[str, Any]]:
     except Exception as e:
         logger.warning("获取商店信息失败: %s", e)
         return None
+
+
+async def create_customer(name: str, phone: str = "") -> Optional[str]:
+    """创建 Loyverse 顾客并返回 customer_id (失败返回 None)"""
+    payload = {
+        "name": name.strip(),
+    }
+    if phone:
+        payload["phone"] = phone.strip()
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.post(
+                f"{LOYVERSE_API_URL}/customers",
+                headers=await _get_headers(),
+                json=payload,
+                timeout=10.0,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            return data.get("id") or data.get("customer_id")
+    except Exception as e:
+        logger.warning("创建顾客失败: %s", e)
+        return None
