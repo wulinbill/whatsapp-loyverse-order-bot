@@ -516,3 +516,54 @@ async def create_customer(name: str, phone: str = "") -> Optional[str]:
     except Exception as e:
         logger.warning("创建顾客失败: %s", e)
         return None
+
+
+async def create_ticket(order_data: Dict[str, Any]) -> Dict[str, Any]:
+    """创建待结账 Ticket (Open Ticket) 并返回响应 JSON"""
+    if not isinstance(order_data, dict):
+        raise ValueError("订单数据必须是字典类型")
+    if "items" not in order_data or not order_data["items"]:
+        raise ValueError("订单必须包含至少一个商品")
+
+    logger.debug("创建 Loyverse Ticket: %s", json.dumps(order_data, ensure_ascii=False))
+
+    await get_menu_items()
+    item_name_to_id = _NAME2ID
+
+    ticket_data = {
+        "store_id": STORE_ID,
+        "line_items": [],
+        "source": "API",
+        "note": order_data.get("note", "")
+    }
+
+    for item in order_data["items"]:
+        name = item.get("name", "")
+        qty = item.get("quantity", 1)
+        variant_id = _find_item_id(name, item_name_to_id)
+        if not variant_id:
+            logger.warning("未找到商品 '%s' 的 ID，跳过该项目", name)
+            continue
+        li = {"variant_id": variant_id, "quantity": qty}
+        if item.get("note"):
+            li["note"] = item["note"]
+        ticket_data["line_items"].append(li)
+
+    if not ticket_data["line_items"]:
+        raise ValueError("没有有效的商品项目可以创建 Ticket")
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.post(
+            f"{LOYVERSE_API_URL}/tickets",
+            headers=await _get_headers(),
+            json=ticket_data,
+            timeout=15.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        ticket_id = data.get("id")
+        if ticket_id:
+            logger.info("Ticket 创建成功 - ID: %s", ticket_id)
+        else:
+            logger.error("Ticket 创建成功但未返回 ID")
+        return data

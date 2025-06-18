@@ -6,7 +6,7 @@ from fastapi.responses import Response
 from twilio.twiml.messaging_response import MessagingResponse
 from utils.logger import get_logger
 from utils.session_store import get_session, reset_session
-from loyverse_api import create_customer, create_order
+from loyverse_api import create_customer, create_ticket
 from gpt_tools import tool_parse_order, tool_get_menu
 import json
 
@@ -77,7 +77,7 @@ async def _process_business_logic(user_id: str, user_message: str) -> str:
             "items": sess["items"],
             "note": "Pedido vía WhatsApp bot"
         }
-        result = await create_order(order_data)
+        result = await create_ticket(order_data)
         total = result.get("total_money_amount") if isinstance(result, dict) else None
         mains = [it for it in sess["items"] if it["name"].split()[0].lower() not in {"acompanantes", "aparte", "extra", "salsa", "no", "poco"}]
         mins = 15 if len(mains) >= 3 else 10

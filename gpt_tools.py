@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any, Dict, List, Union
 
-from loyverse_api import get_menu_items, create_order, get_name_to_id_mapping
+from loyverse_api import get_menu_items, create_order, get_name_to_id_mapping, create_ticket
 from gpt_parser import parse_order, validate_order_json, get_menu_item_names
 from utils.logger import get_logger
 
@@ -250,7 +250,7 @@ def tool_submit_order(order_json: str) -> str:
             return json.dumps({"success": False, "error": error_msg}, ensure_ascii=False)
         
         # 提交订单
-        result = _run_async(create_order(order_data))
+        result = _run_async(create_ticket(order_data))
         
         logger.info("订单提交成功")
         return json.dumps({
