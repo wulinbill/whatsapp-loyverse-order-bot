@@ -178,3 +178,32 @@ SYSTEM_PROMPT = """
 - 如果解析出现问题，礼貌地要求客户重新描述订单
 - 支持中文、英文和西班牙语交流
 """
+
+# ------------------------------------------------------------
+# Simplified helper : generate plain-language reply
+# ------------------------------------------------------------
+
+def simple_reply(user_id: str, prompt: str) -> str:
+    """给定提示，让 LLM 生成一段客服回复文本（不触发工具）。"""
+    try:
+        if not prompt.strip():
+            return "Lo siento, no entendí. ¿Podría repetirlo, por favor?"
+        # 为每个用户保留简易 memory（继续复用 _user_memories）
+        if user_id not in _user_memories:
+            _user_memories[user_id] = ConversationBufferMemory(memory_key="chat_history", return_messages=True)
+        memory = _user_memories[user_id]
+        history_msgs = memory.chat_memory.messages if hasattr(memory, 'chat_memory') else []
+
+        # 组装聊天历史+新提示
+        from langchain.schema import AIMessage, HumanMessage, SystemMessage
+        messages = [SystemMessage(content="Eres un amable camarero virtual del restaurante KongFood.")]
+        messages.extend(history_msgs)
+        messages.append(HumanMessage(content=prompt))
+        reply = llm.predict_messages(messages).content.strip()
+        # 存入记忆
+        memory.chat_memory.add_user_message(prompt)
+        memory.chat_memory.add_ai_message(reply)
+        return reply
+    except Exception as e:
+        logger.error("simple_reply 失败: %s", e)
+        return "Lo siento, ocurrió un error al generar la respuesta."
