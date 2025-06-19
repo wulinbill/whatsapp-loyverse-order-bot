@@ -9,6 +9,7 @@ from utils.session_store import get_session, reset_session
 from loyverse_api import create_customer, create_ticket
 from gpt_tools import tool_parse_order, tool_get_menu
 import json
+from langchain_agent import simple_reply
 
 logger = get_logger(__name__)
 
@@ -191,9 +192,12 @@ async def handle_whatsapp_message(request: Request) -> Response:
         # 定期清理内存
         _request_counter += 1
 
+        # 使用 LLM 对回复进行自然语言润色
+        reply_final = simple_reply(user_id, reply)
+
         # 创建 TwiML 响应
         twiml_response = MessagingResponse()
-        twiml_response.message(reply)
+        twiml_response.message(reply_final)
         
         return Response(content=str(twiml_response), media_type="application/xml")
         
