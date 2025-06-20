@@ -110,4 +110,20 @@ def main():
             args.redirect_uri
         )
         
-        # 格式化输
+        # 格式化输出并显示结果
+        token_json = json.dumps(token_data, ensure_ascii=False, indent=2)
+        if args.output:
+            with open(args.output, "w", encoding="utf-8") as f:
+                f.write(token_json)
+            print(f"令牌已写入 {args.output}")
+        else:
+            print("获取到的令牌信息:")
+            print(token_json)
+
+    except Exception as e:
+        print(f"获取令牌失败: {e}")
+        sys.exit(1)
+
+
+if __name__ == "__main__":
+    main()
