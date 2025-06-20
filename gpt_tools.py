@@ -271,7 +271,7 @@ def tool_submit_order(order_json: str) -> str:
 
 # ---------- 工具描述，供 LangChain 注册 ---------- #
 TOOL_DESCRIPTIONS = {
-    "GetMenu": "获取当前菜单项目列表。输入：任意字符串（忽略）。输出：菜单项目列表的 JSON。",
+    "GetMenu": "获取当前菜单项目列表。输入：任意字符串（忽略）。输出：形如 {\"success\": True, \"total_items\": ..., \"menu_items\": [...]} 的 JSON。",
     "ParseOrder": "解析客户的自然语言订单消息为标准 JSON 格式。输入：客户订单消息（字符串）。输出：JSON 格式的订单数据。",
     "SubmitOrder": "将解析好的订单提交到 Loyverse POS 系统创建待结账票据。输入：订单数据的 JSON 字符串。输出：提交结果，包含 ticket_id。"
 }
