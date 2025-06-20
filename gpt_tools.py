@@ -197,7 +197,7 @@ def tool_submit_order(order_json: str) -> str:
         order_json: JSON 格式的订单字符串（单一输入参数）
         
     Returns:
-        JSON 格式的提交结果字符串
+        JSON 格式的提交结果字符串（含 ticket_id）
     """
     logger.info("提交订单到 Loyverse POS")
     logger.debug("收到的订单数据: %s", order_json)
@@ -251,12 +251,15 @@ def tool_submit_order(order_json: str) -> str:
         
         # 提交订单
         result = _run_async(create_ticket(order_data))
-        
+        ticket_id = None
+        if isinstance(result, dict):
+            ticket_id = result.get("id")
+
         logger.info("订单提交成功")
         return json.dumps({
             "success": True,
             "message": "订单提交成功",
-            "sale_id": result.get("sale_id") if result else None,
+            "ticket_id": ticket_id,
             "order_data": order_data
         }, ensure_ascii=False)
         
