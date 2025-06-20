@@ -155,38 +155,25 @@ def _build_name_index(menu_data: Dict[str, Any]) -> None:
         if not main_id:
             continue
 
-        # --- BEGIN NEW ALIAS GENERATION LOGIC ---
         aliases_to_add = set()
-
-        # 1. Add the base name itself
-        aliases_to_add.add(raw_name)
-
-        # 2. Add constructed aliases based on category
-        # For item "Pollo Naranja" in category "Combinaciones"
-        # it will create "combinacion de pollo naranja", etc.
+        
+        # Add aliases based on category
         is_mini = 'mini' in category or 'mini' in raw_name.lower()
         is_combo = 'combinaciones' in category
 
         if is_combo:
             simple_name = raw_name.lower().replace('mini', '').strip()
-            # "combinacion de pollo naranja"
             aliases_to_add.add(f"combinacion de {simple_name}")
             aliases_to_add.add(f"combinación de {simple_name}")
-            # "pollo naranja" (already added as base)
             aliases_to_add.add(simple_name)
-
             if is_mini:
-                # "mini pollo naranja"
                 aliases_to_add.add(f"mini {simple_name}")
-                # "mini combinacion de pollo naranja"
                 aliases_to_add.add(f"mini combinacion de {simple_name}")
                 aliases_to_add.add(f"mini combinación de {simple_name}")
         
-        # 3. For items that start with "Cambio ", add alias without prefix
         if raw_name.lower().startswith("cambio "):
             aliases_to_add.add(raw_name[7:].strip())
 
-        # 4. Extract aliases from description field (from CSV)
         desc_raw = (itm.get("description") or "")
         if desc_raw:
             desc_text = re.sub(r"<[^>]+>", " ", desc_raw)
@@ -197,19 +184,21 @@ def _build_name_index(menu_data: Dict[str, Any]) -> None:
                     if a.strip():
                         aliases_to_add.add(a.strip())
 
-        # Normalize and add all aliases to the main index
         for alias in aliases_to_add:
             norm_alias = _normalize_name(alias)
             if norm_alias:
                 _NAME2ID[norm_alias] = main_id
-        # --- END NEW ALIAS GENERATION LOGIC ---
 
-        # Add variant-specific names
+        # Crucially, always ensure the raw_name itself is in the index,
+        # pointing to the main ID. This might have been missed if no aliases were generated.
+        base_key = _normalize_name(raw_name)
+        if base_key:
+            _NAME2ID[base_key] = main_id
+            
         for var in variants:
             var_name_raw = var.get("name") or var.get("variant_name") or ""
             if not var_name_raw:
                 continue
-            # "Pollo Naranja arroz+papas"
             var_key = _normalize_name(f"{raw_name} {var_name_raw}")
             var_id = _extract_var_id(var)
             if var_key and var_id:
