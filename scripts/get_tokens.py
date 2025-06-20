@@ -110,4 +110,50 @@ def main():
             args.redirect_uri
         )
         
-        # 格式化输
+     diff --git a/scripts/get_tokens.py b/scripts/get_tokens.py
+index 1191639ecdd6b11805dcb5a7d0cf0061bb90954d..737bb702b540acd6c1bede2a57e93b9c1f2ea47f 100644
+--- a/scripts/get_tokens.py
++++ b/scripts/get_tokens.py
+@@ -88,26 +88,42 @@ def main():
+     parser.add_argument(
+         "--client_secret", 
+         required=True,
+         help="Loyverse 应用的客户端密钥"
+     )
+     parser.add_argument(
+         "--redirect_uri",
+         help="可选的重定向 URI（如果在授权时使用了）"
+     )
+     parser.add_argument(
+         "--output",
+         help="输出文件路径（如果不指定则输出到控制台）"
+     )
+     
+     args = parser.parse_args()
+     
+     try:
+         print("正在获取访问令牌...")
+         token_data = get_tokens(
+             args.code,
+             args.client_id, 
+             args.client_secret,
+             args.redirect_uri
+         )
++        # 格式化输出并显示结果
++        token_json = json.dumps(token_data, ensure_ascii=False, indent=2)
++        if args.output:
++            with open(args.output, "w", encoding="utf-8") as f:
++                f.write(token_json)
++            print(f"令牌已写入 {args.output}")
++        else:
++            print("获取到的令牌信息:")
++            print(token_json)
++
++    except Exception as e:
++        print(f"获取令牌失败: {e}")
++        sys.exit(1)
++
++
++if __name__ == "__main__":
++    main()
+
