@@ -1,7 +1,14 @@
 """配置管理模块"""
 import os
 from typing import Optional
-from pydantic import BaseSettings, Field
+from pydantic import Field
+
+try:
+    # Pydantic v2.x: BaseSettings 在独立包中
+    from pydantic_settings import BaseSettings
+except ImportError:
+    # Pydantic v1.x: BaseSettings 在主包中
+    from pydantic import BaseSettings
 
 
 class Settings(BaseSettings):
