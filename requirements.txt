@@ -1,0 +1,6 @@
+flask==3.0.3
+gunicorn==22.0.0
+twilio>=9.0
+openai>=1.30
+deepgram-sdk>=3.0
+httpx>=0.27
