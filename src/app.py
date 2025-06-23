@@ -54,8 +54,15 @@ def create_app() -> Flask:
     @app.before_request
     def log_request_info():
         """记录请求信息"""
-        if request.endpoint not in ['health_check']:  # 排除健康检查的日志
+        if request.endpoint not in ['health_check', 'index']:  # 排除健康检查和根端点的日志
             logger.debug(f"📥 {request.method} {request.path} from {request.remote_addr}")
+    
+    @app.route("/", methods=["GET"])
+    def index():
+        """
+        根端点，返回欢迎信息
+        """
+        return "<h1>Welcome to the WhatsApp Ordering Bot!</h1><p>The bot is running.</p>"
     
     @app.route("/health", methods=["GET"])
     def health_check():
@@ -200,6 +207,14 @@ def create_app() -> Flask:
             return create_error_response(
                 "Disculpa, ocurrió un error técnico. Nuestro equipo ha sido notificado. 🔧"
             )
+    
+    @app.route("/whatsapp-webhook", methods=["POST"])
+    def handle_whatsapp_webhook():
+        """
+        处理来自Twilio的WhatsApp消息的备用端点
+        """
+        logger.info("Received request on /whatsapp-webhook, forwarding to /sms handler.")
+        return handle_sms()
     
     def handle_audio_message(request) -> str:
         """
