@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Loyverse POS API客户端模块 (修正版)
+Loyverse POS API客户端模块 (修复支付类型UUID问题版本)
 处理与Loyverse点餐系统的集成
 """
 
 import os
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 import httpx
 from loyverse_auth import get_access_token
 
@@ -19,9 +19,93 @@ BASE_URL = "https://api.loyverse.com/v1.0"
 # API超时设置
 API_TIMEOUT = 15.0
 
+def get_payment_types() -> List[Dict[str, Any]]:
+    """
+    获取商店的支付方式列表
+    
+    Returns:
+        支付方式列表
+    """
+    try:
+        access_token = get_access_token()
+        store_id = os.getenv("LOYVERSE_STORE_ID")
+        
+        if not store_id:
+            raise ValueError("LOYVERSE_STORE_ID not configured")
+        
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json"
+        }
+        
+        endpoint = f"{BASE_URL}/payment_types"
+        params = {"store_id": store_id}
+        
+        with httpx.Client(timeout=API_TIMEOUT) as client:
+            response = client.get(endpoint, headers=headers, params=params)
+            response.raise_for_status()
+            
+            payment_types_data = response.json()
+            payment_types = payment_types_data.get("payment_types", [])
+            
+            logger.info(f"💳 Retrieved {len(payment_types)} payment types")
+            return payment_types
+            
+    except Exception as e:
+        logger.error(f"Failed to get payment types: {e}")
+        raise Exception(f"Failed to get payment types: {str(e)}")
+
+def get_default_payment_type_id() -> str:
+    """
+    获取默认支付方式ID
+    
+    Returns:
+        默认支付方式的UUID
+    """
+    try:
+        # 首先尝试从环境变量获取
+        default_payment_id = os.getenv("LOYVERSE_DEFAULT_PAYMENT_TYPE_ID")
+        if default_payment_id:
+            logger.debug(f"💳 Using payment type from env: {default_payment_id}")
+            return default_payment_id
+        
+        # 如果没有配置，从API获取支付方式
+        payment_types = get_payment_types()
+        
+        if not payment_types:
+            raise ValueError("No payment types available")
+        
+        # 查找现金支付方式
+        cash_payment = None
+        for payment_type in payment_types:
+            name = payment_type.get("name", "").lower()
+            payment_type_name = payment_type.get("type", "").lower()
+            
+            if ("cash" in name or "efectivo" in name or 
+                "cash" in payment_type_name or payment_type_name == "cash"):
+                cash_payment = payment_type
+                break
+        
+        # 如果找到现金支付，使用它
+        if cash_payment:
+            payment_id = cash_payment.get("id")
+            logger.info(f"💳 Found cash payment type: {cash_payment.get('name')} ({payment_id})")
+            return payment_id
+        
+        # 否则使用第一个可用的支付方式
+        first_payment = payment_types[0]
+        payment_id = first_payment.get("id")
+        logger.warning(f"💳 Using first available payment type: {first_payment.get('name')} ({payment_id})")
+        return payment_id
+        
+    except Exception as e:
+        logger.error(f"Failed to get default payment type: {e}")
+        # 返回一个示例UUID作为最后备用（需要用户配置正确的）
+        raise Exception(f"Cannot determine payment type ID. Please set LOYVERSE_DEFAULT_PAYMENT_TYPE_ID environment variable: {str(e)}")
+
 def place_order(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    向Loyverse POS系统下单 (使用正确的receipts端点)
+    向Loyverse POS系统下单 (修复支付类型UUID问题)
     
     Args:
         payload: 订单负载数据
@@ -45,10 +129,10 @@ def place_order(payload: Dict[str, Any]) -> Dict[str, Any]:
             "Accept": "application/json"
         }
         
-        # 验证订单负载
-        validated_payload = validate_order_payload(payload)
+        # 验证和修复订单负载
+        validated_payload = validate_and_fix_order_payload(payload)
         
-        # 构建正确的API端点 - 使用receipts而不是orders
+        # 构建正确的API端点
         endpoint = f"{BASE_URL}/receipts"
         
         logger.debug(f"🔗 API endpoint: {endpoint}")
@@ -96,15 +180,15 @@ def place_order(payload: Dict[str, Any]) -> Dict[str, Any]:
         logger.error(error_msg)
         raise Exception(error_msg)
 
-def validate_order_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
+def validate_and_fix_order_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
-    验证并清理订单负载数据 (使用正确的字段名)
+    验证并修复订单负载数据 (修复支付类型UUID问题)
     
     Args:
         payload: 原始订单负载
         
     Returns:
-        验证后的订单负载
+        验证并修复后的订单负载
         
     Raises:
         ValueError: 当负载数据无效时
@@ -119,10 +203,10 @@ def validate_order_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
         if not store_id:
             raise ValueError("LOYVERSE_STORE_ID environment variable is required")
         
-        # 获取POS设备ID (修正: 使用pos_device_id而不是register_id)
+        # 获取POS设备ID
         pos_device_id = payload.get("pos_device_id")
         if not pos_device_id:
-            pos_device_id = os.getenv("LOYVERSE_POS_DEVICE_ID")  # 修正环境变量名
+            pos_device_id = os.getenv("LOYVERSE_POS_DEVICE_ID")
             if not pos_device_id:
                 raise ValueError("Missing 'pos_device_id' and LOYVERSE_POS_DEVICE_ID not configured")
         
@@ -136,27 +220,47 @@ def validate_order_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
             validated_item = validate_line_item(item, i)
             validated_items.append(validated_item)
         
-        # 构建最终负载 - 使用正确的Loyverse API结构
+        # 构建最终负载
         validated_payload = {
-            "store_id": store_id,  # 必需字段
-            "pos_device_id": pos_device_id,  # 修正字段名
+            "store_id": store_id,
+            "pos_device_id": pos_device_id,
             "line_items": validated_items
         }
         
-        # 添加默认支付方式 (收据创建可能需要)
+        # 添加支付方式 - 修复UUID问题
         if "payments" not in payload:
-            # 添加默认现金支付
+            # 计算总金额
             total_amount = sum(item["price"] * item["quantity"] for item in validated_items)
+            
+            # 获取正确的支付方式ID (UUID)
+            payment_type_id = get_default_payment_type_id()
+            
             validated_payload["payments"] = [
                 {
-                    "payment_type_id": "cash",  # 需要根据实际POS系统配置
-                    "money_amount": total_amount,
-                    "name": "Cash",
-                    "type": "CASH"
+                    "payment_type_id": payment_type_id,  # 使用正确的UUID
+                    "money_amount": total_amount
                 }
             ]
+            
+            logger.info(f"💳 Using payment type ID: {payment_type_id} for amount ${total_amount:.2f}")
         else:
-            validated_payload["payments"] = payload["payments"]
+            # 验证现有支付信息
+            payments = payload["payments"]
+            validated_payments = []
+            
+            for payment in payments:
+                # 确保支付方式ID是有效的UUID
+                payment_type_id = payment.get("payment_type_id")
+                if not payment_type_id or payment_type_id == "cash":
+                    payment_type_id = get_default_payment_type_id()
+                
+                validated_payment = {
+                    "payment_type_id": payment_type_id,
+                    "money_amount": payment.get("money_amount", 0.0)
+                }
+                validated_payments.append(validated_payment)
+            
+            validated_payload["payments"] = validated_payments
         
         # 添加可选字段
         optional_fields = ["customer_id", "note", "total_discounts", "employee_id"]
@@ -212,7 +316,7 @@ def validate_line_item(item: Dict[str, Any], index: int) -> Dict[str, Any]:
     validated_item = {
         "variant_id": variant_id,
         "quantity": quantity,
-        "price": price  # 保持原始价格格式，让API处理
+        "price": price
     }
     
     # 添加可选字段
@@ -242,7 +346,6 @@ def get_pos_devices() -> List[Dict[str, Any]]:
             "Accept": "application/json"
         }
         
-        # 使用正确的POS设备端点
         endpoint = f"{BASE_URL}/pos_devices"
         params = {"store_id": store_id}
         
@@ -302,7 +405,7 @@ def check_api_status() -> Dict[str, Any]:
         API状态字典
     """
     try:
-        # 检查环境变量 - 使用正确的变量名
+        # 检查环境变量
         required_vars = ["LOYVERSE_CLIENT_ID", "LOYVERSE_CLIENT_SECRET", "LOYVERSE_STORE_ID", "LOYVERSE_POS_DEVICE_ID"]
         missing_vars = [var for var in required_vars if not os.getenv(var)]
         
@@ -317,16 +420,69 @@ def check_api_status() -> Dict[str, Any]:
         store_info = get_store_info()
         pos_devices = get_pos_devices()
         
+        # 测试支付方式
+        try:
+            payment_types = get_payment_types()
+            default_payment_id = get_default_payment_type_id()
+            
+            payment_status = {
+                "total_payment_types": len(payment_types),
+                "default_payment_id": default_payment_id,
+                "payment_types_available": True
+            }
+        except Exception as e:
+            payment_status = {
+                "payment_types_available": False,
+                "payment_error": str(e)
+            }
+        
         return {
             "status": "healthy",
             "store_name": store_info.get("name", "Unknown"),
             "store_id": store_info.get("id"),
             "pos_devices_count": len(pos_devices),
-            "api_version": "v1.0"
+            "api_version": "v1.0",
+            "payment_info": payment_status
         }
         
     except Exception as e:
         return {
             "status": "unhealthy",
             "error": str(e)
+        }
+
+def setup_payment_type_id():
+    """
+    设置支付方式ID的辅助函数
+    用于初始化时获取和显示可用的支付方式
+    
+    Returns:
+        支付方式信息字典
+    """
+    try:
+        payment_types = get_payment_types()
+        
+        logger.info("💳 Available payment types:")
+        for payment_type in payment_types:
+            name = payment_type.get("name", "Unknown")
+            payment_id = payment_type.get("id", "Unknown")
+            payment_type_name = payment_type.get("type", "Unknown")
+            
+            logger.info(f"  - {name} ({payment_type_name}): {payment_id}")
+        
+        # 获取默认支付方式
+        default_id = get_default_payment_type_id()
+        
+        return {
+            "available_payment_types": payment_types,
+            "default_payment_id": default_id,
+            "setup_complete": True
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to setup payment types: {e}")
+        return {
+            "setup_complete": False,
+            "error": str(e),
+            "message": "Please configure LOYVERSE_DEFAULT_PAYMENT_TYPE_ID environment variable"
         }
