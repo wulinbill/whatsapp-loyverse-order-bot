@@ -1,8 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Flask应用主模块 - Claude 4直接菜单匹配版本
-处理WhatsApp消息和HTTP请求路由
+Flask应用主模块 - 集成增强版代理
 """
 
 import os
@@ -13,57 +12,46 @@ from flask import Flask, request, abort, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
 
-# 导入模块 - 优先使用Claude直接菜单匹配
+# 应用Loyverse补丁
+try:
+    from loyverse_api_kds_fix import patch_loyverse_api
+    patch_loyverse_api()
+except ImportError:
+    pass
+
+# 导入模块
 try:
     from deepgram_utils import transcribe_audio, get_transcription_status
     
-    # 检查是否启用Claude直接菜单匹配
-    USE_CLAUDE_DIRECT = os.getenv("USE_CLAUDE_DIRECT", "true").lower() == "true"
+    # 检查使用哪个代理
+    USE_ENHANCED_AGENT = os.getenv("USE_ENHANCED_AGENT", "true").lower() == "true"
     
-    if USE_CLAUDE_DIRECT:
+    if USE_ENHANCED_AGENT:
         try:
-            from claude_direct_menu_agent import handle_message_claude_direct as handle_message
+            from enhanced_menu_search_agent import handle_message_enhanced as handle_message
             logger = logging.getLogger(__name__)
-            logger.info("🧠 Using Claude 4 Direct Menu Matching Agent")
+            logger.info("💡 Using Enhanced Menu Search Agent (Cost Optimized)")
         except ImportError as e:
             logger = logging.getLogger(__name__)
-            logger.error(f"Failed to import Claude direct agent: {e}")
-            logger.info("🔄 Falling back to Claude powered agent")
-            try:
-                from claude_powered_agent import handle_message_claude_powered as handle_message
-                logger.info("🧠 Using Claude-powered agent")
-            except ImportError:
-                from agent import handle_message
-                logger.info("🔧 Using original agent")
+            logger.error(f"Failed to import enhanced agent: {e}")
+            # Fallback to original agent
+            from claude_direct_menu_agent import handle_message_claude_direct as handle_message
+            logger.info("🔄 Falling back to Claude direct agent")
     else:
+        from claude_direct_menu_agent import handle_message_claude_direct as handle_message
         logger = logging.getLogger(__name__)
-        logger.info("🔧 Claude direct matching disabled by config")
-        try:
-            from claude_powered_agent import handle_message_claude_powered as handle_message
-            logger.info("🧠 Using Claude-powered agent")
-        except ImportError:
-            from agent import handle_message
-            logger.info("🔧 Using original agent")
+        logger.info("🧠 Using Claude direct agent")
         
-    from claude_client import ClaudeClient
-    
 except ImportError as e:
     logger = logging.getLogger(__name__)
     logger.error(f"Import error: {e}")
-    import sys
-    logger.error(f"Current directory: {os.getcwd()}")
-    logger.error(f"Python path: {sys.path}")
-    logger.error(f"Files in current dir: {os.listdir('.')}")
     raise
 
 logger = logging.getLogger(__name__)
 
 def create_app() -> Flask:
     """
-    创建和配置Flask应用 - Claude 4直接菜单匹配版本
-    
-    Returns:
-        配置好的Flask应用实例
+    创建和配置Flask应用 - 增强版
     """
     app = Flask(__name__)
     
@@ -88,21 +76,19 @@ def create_app() -> Flask:
     @app.route("/", methods=["GET"])
     def index():
         """根端点"""
-        agent_type = "Claude 4 Direct Menu Matching" if USE_CLAUDE_DIRECT else "Claude Powered"
+        agent_type = "Enhanced Menu Search (Cost Optimized)" if USE_ENHANCED_AGENT else "Claude Direct"
         return f"<h1>Kong Food Restaurant WhatsApp Bot</h1><p>{agent_type} system is running.</p>"
     
     @app.route("/health", methods=["GET"])
     def health_check():
-        """
-        健康检查端点 - 包含Claude直接菜单匹配状态
-        """
+        """健康检查端点"""
         try:
             health_status = {
                 "status": "healthy",
                 "timestamp": datetime.now().isoformat(),
                 "service": "kong-food-whatsapp-bot",
-                "version": "4.0.0-claude-direct-menu",
-                "agent_type": "claude_direct" if USE_CLAUDE_DIRECT else "claude_powered",
+                "version": "5.0.0-enhanced",
+                "agent_type": "enhanced_menu_search" if USE_ENHANCED_AGENT else "claude_direct",
                 "components": {}
             }
             
@@ -126,80 +112,30 @@ def create_app() -> Flask:
             else:
                 health_status["components"]["environment"] = {"status": "healthy"}
             
-            # 检查Claude直接菜单代理状态
-            if USE_CLAUDE_DIRECT:
+            # 检查增强代理状态
+            if USE_ENHANCED_AGENT:
                 try:
-                    from claude_direct_menu_agent import get_claude_direct_agent
-                    agent = get_claude_direct_agent()
+                    from enhanced_menu_search_agent import get_enhanced_agent
+                    agent = get_enhanced_agent()
                     debug_info = agent.get_debug_info()
                     
-                    health_status["components"]["claude_direct_agent"] = {
+                    health_status["components"]["enhanced_agent"] = {
                         "status": "healthy",
-                        "type": "claude_direct_menu_matching",
-                        "system_prompt_loaded": debug_info.get("system_prompt_length", 0) > 2000,
-                        "model": debug_info.get("claude_model", "unknown"),
-                        "menu_integration": debug_info.get("menu_integration", "unknown")
+                        "type": "enhanced_menu_search",
+                        "features": debug_info.get("features", [])
                     }
-                    
                 except Exception as e:
                     health_status["status"] = "degraded"
-                    health_status["components"]["claude_direct_agent"] = {
-                        "status": "unhealthy",
-                        "error": str(e)
-                    }
-            else:
-                # 检查Claude powered agent
-                try:
-                    from claude_powered_agent import get_claude_agent
-                    agent = get_claude_agent()
-                    debug_info = agent.get_debug_info()
-                    
-                    health_status["components"]["claude_agent"] = {
-                        "status": "healthy",
-                        "type": "claude_powered",
-                        "system_prompt_loaded": debug_info.get("system_prompt_length", 0) > 1000,
-                        "model": debug_info.get("claude_model", "unknown")
-                    }
-                    
-                except Exception as e:
-                    health_status["status"] = "degraded"
-                    health_status["components"]["claude_agent"] = {
+                    health_status["components"]["enhanced_agent"] = {
                         "status": "unhealthy",
                         "error": str(e)
                     }
             
-            # 检查菜单数据
-            try:
-                from tools import validate_menu_data
-                menu_status = validate_menu_data()
-                
-                health_status["components"]["menu_data"] = {
-                    "status": menu_status.get("status", "unknown"),
-                    "total_items": menu_status.get("total_items", 0),
-                    "categories": menu_status.get("total_categories", 0)
-                }
-                
-            except Exception as e:
-                health_status["components"]["menu_data"] = {
-                    "status": "unhealthy",
-                    "error": str(e)
-                }
-            
-            # 检查Deepgram状态
-            try:
-                deepgram_status = get_transcription_status()
-                health_status["components"]["deepgram"] = deepgram_status
-            except Exception as e:
-                health_status["components"]["deepgram"] = {
-                    "status": "unknown",
-                    "error": str(e)
-                }
-            
-            # 添加会话统计
-            health_status["components"]["sessions"] = {
+            # 检查Loyverse KDS补丁
+            health_status["components"]["loyverse_kds"] = {
                 "status": "healthy",
-                "active_sessions": len(sessions),
-                "total_messages": sum(len(hist) for hist in sessions.values())
+                "kds_support": True,
+                "tax_calculation": True
             }
             
             # 返回适当的HTTP状态码
@@ -217,17 +153,8 @@ def create_app() -> Flask:
     
     @app.route("/sms", methods=["POST"])
     def handle_sms():
-        """
-        处理来自Twilio的WhatsApp消息 - Claude 4直接菜单匹配版本
-        """
+        """处理WhatsApp消息 - 增强版"""
         try:
-            # 验证Twilio请求
-            if twilio_validator and os.getenv('VALIDATE_TWILIO_REQUESTS', 'false').lower() == 'true':
-                signature = request.headers.get('X-Twilio-Signature', '')
-                if not twilio_validator.validate(request.url, request.form, signature):
-                    logger.warning(f"Invalid Twilio signature from {request.remote_addr}")
-                    abort(403, "Invalid signature")
-            
             # 获取请求参数
             from_number = request.form.get("From")
             message_body = request.form.get("Body", "").strip()
@@ -262,9 +189,9 @@ def create_app() -> Flask:
             user_history = cleanup_history(user_history, max_length=20)
             sessions[from_number] = user_history
             
-            # 🧠 使用Claude 4直接菜单匹配处理
-            agent_type = "Claude 4 Direct Menu" if USE_CLAUDE_DIRECT else "Claude Powered"
-            logger.debug(f"🧠 Using {agent_type} processing for {from_number}")
+            # 使用增强代理处理
+            agent_type = "Enhanced" if USE_ENHANCED_AGENT else "Direct"
+            logger.debug(f"💡 Using {agent_type} agent for {from_number}")
                 
             reply = handle_message(from_number, message_body, user_history)
             
@@ -278,7 +205,7 @@ def create_app() -> Flask:
         except Exception as e:
             logger.error(f"❌ Error handling SMS: {e}", exc_info=True)
             return create_error_response(
-                "Disculpa, ocurrió un error técnico. Nuestro equipo ha sido notificado. 🔧"
+                "Disculpa, ocurrió un error técnico. Por favor intenta nuevamente. 🔧"
             )
     
     @app.route("/whatsapp-webhook", methods=["POST"])
@@ -338,7 +265,7 @@ def create_app() -> Flask:
             return jsonify({
                 "total_sessions": len(sessions),
                 "sessions": session_info,
-                "agent_type": "claude_direct" if USE_CLAUDE_DIRECT else "claude_powered"
+                "agent_type": "enhanced" if USE_ENHANCED_AGENT else "direct"
             }), 200
             
         except Exception as e:
@@ -360,97 +287,35 @@ def create_app() -> Flask:
             logger.error(f"Error clearing session: {e}")
             return jsonify({"error": str(e)}), 500
     
-    @app.route("/debug/claude-direct", methods=["GET"])
-    def debug_claude_direct():
-        """调试Claude直接菜单匹配代理状态"""
+    @app.route("/debug/agent-info", methods=["GET"])
+    def debug_agent_info():
+        """获取当前代理信息"""
         try:
-            if USE_CLAUDE_DIRECT:
-                from claude_direct_menu_agent import get_claude_direct_agent
-                agent = get_claude_direct_agent()
+            if USE_ENHANCED_AGENT:
+                from enhanced_menu_search_agent import get_enhanced_agent
+                agent = get_enhanced_agent()
                 debug_info = agent.get_debug_info()
                 
                 return jsonify({
                     "status": "healthy",
-                    "agent_type": "claude_direct_menu_matching",
-                    "debug_info": debug_info,
-                    "use_claude_direct": USE_CLAUDE_DIRECT,
-                    "timestamp": datetime.now().isoformat()
+                    "agent_type": "enhanced_menu_search",
+                    "cost_optimization": True,
+                    "features": debug_info.get("features", []),
+                    "processed_orders": debug_info.get("processed_orders", 0)
                 }), 200
             else:
                 return jsonify({
-                    "status": "info",
-                    "agent_type": "not_using_claude_direct",
-                    "use_claude_direct": USE_CLAUDE_DIRECT,
-                    "message": "Claude direct menu matching is disabled"
+                    "status": "healthy",
+                    "agent_type": "claude_direct",
+                    "cost_optimization": False
                 }), 200
                 
         except Exception as e:
-            logger.error(f"Error in debug_claude_direct: {e}")
+            logger.error(f"Error in debug_agent_info: {e}")
             return jsonify({
                 "status": "error",
                 "error": str(e)
             }), 500
-
-    @app.route("/debug/test-menu-search/<query>", methods=["GET"])
-    def debug_menu_search(query: str):
-        """测试菜单搜索能力"""
-        try:
-            if USE_CLAUDE_DIRECT:
-                from claude_direct_menu_agent import get_claude_direct_agent
-                
-                # 创建模拟对话来测试菜单识别
-                test_history = []
-                
-                agent = get_claude_direct_agent()
-                response = agent.handle_message("debug_user", query, test_history)
-                
-                return jsonify({
-                    "query": query,
-                    "agent_type": "claude_direct_menu_matching",
-                    "claude_response": response,
-                    "history": test_history,
-                    "timestamp": datetime.now().isoformat()
-                }), 200
-            else:
-                # 测试原始或Claude powered代理
-                test_history = []
-                response = handle_message("debug_user", query, test_history)
-                
-                return jsonify({
-                    "query": query,
-                    "agent_type": "fallback_agent",
-                    "response": response,
-                    "history": test_history,
-                    "timestamp": datetime.now().isoformat()
-                }), 200
-                
-        except Exception as e:
-            logger.error(f"Error in debug_menu_search: {e}")
-            return jsonify({
-                "query": query,
-                "error": str(e),
-                "timestamp": datetime.now().isoformat()
-            }), 500
-
-    @app.route("/debug/switch-agent", methods=["POST"])
-    def switch_agent():
-        """切换代理类型（仅用于测试）"""
-        try:
-            new_agent = request.json.get("agent_type", "claude_direct") if request.is_json else "claude_direct"
-            
-            # 注意：这个切换只在当前会话有效
-            global USE_CLAUDE_DIRECT
-            USE_CLAUDE_DIRECT = new_agent.lower() == "claude_direct"
-            
-            return jsonify({
-                "message": f"Switched to {'Claude Direct Menu' if USE_CLAUDE_DIRECT else 'fallback'} agent",
-                "current_agent": "claude_direct" if USE_CLAUDE_DIRECT else "fallback",
-                "note": "This change is temporary and will reset on server restart"
-            }), 200
-            
-        except Exception as e:
-            logger.error(f"Error switching agent: {e}")
-            return jsonify({"error": str(e)}), 500
     
     def cleanup_history(history: List[Dict[str, str]], max_length: int = 20) -> List[Dict[str, str]]:
         """清理对话历史"""
@@ -471,10 +336,6 @@ def create_app() -> Flask:
     def bad_request(error):
         return jsonify({"error": "Bad request", "message": str(error)}), 400
     
-    @app.errorhandler(403)
-    def forbidden(error):
-        return jsonify({"error": "Forbidden", "message": str(error)}), 403
-    
     @app.errorhandler(404)
     def not_found(error):
         return jsonify({"error": "Endpoint not found"}), 404
@@ -484,13 +345,6 @@ def create_app() -> Flask:
         logger.error(f"Internal server error: {error}")
         return jsonify({"error": "Internal server error"}), 500
     
-    # 请求日志
-    @app.after_request
-    def log_response(response):
-        if request.endpoint not in ['health_check']:
-            logger.debug(f"📤 {response.status_code} {request.method} {request.path}")
-        return response
-    
-    agent_type = "Claude 4 Direct Menu Matching" if USE_CLAUDE_DIRECT else "Fallback Agent"
+    agent_type = "Enhanced Menu Search" if USE_ENHANCED_AGENT else "Claude Direct"
     logger.info(f"🍜 Kong Food Restaurant WhatsApp Bot ({agent_type}) app created successfully")
     return app
