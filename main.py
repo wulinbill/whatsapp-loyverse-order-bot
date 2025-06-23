@@ -7,6 +7,7 @@ Kong Food Restaurant WhatsApp订餐机器人
 
 import os
 import sys
+import logging
 
 # 确保正确的Python路径设置
 current_dir = os.path.dirname(os.path.abspath(__file__))
@@ -34,19 +35,18 @@ except ImportError as e:
 app = create_app()
 
 if __name__ == '__main__':
-    # 开发环境配置
-    port = int(os.getenv('PORT', 10000))
-    debug = os.getenv('FLASK_ENV') == 'development'
-    
-    print(f"🍜 Kong Food Restaurant Bot starting on port {port}")
-    print(f"🤖 Using Claude AI for intelligent conversations")
-    print(f"🌐 Debug mode: {debug}")
-    print(f"📁 Working directory: {os.getcwd()}")
-    print(f"🐍 Python path: {sys.path[:3]}...")  # Show first 3 entries
-    
-    app.run(
-        host='0.0.0.0',
-        port=port,
-        debug=debug,
-        threaded=True
+    # 配置日志记录
+    logging.basicConfig(
+        level=logging.INFO, 
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
     )
+    
+    # 从环境变量获取端口，默认为 8080
+    port = int(os.environ.get("PORT", 8080))
+    
+    # 使用 waitress 作为生产服务器
+    from waitress import serve
+    serve(app, host="0.0.0.0", port=port)
+    
+    # for development:
+    # app.run(host="0.0.0.0", port=port, debug=True)
