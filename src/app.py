@@ -13,9 +13,20 @@ from flask import Flask, request, abort, jsonify
 from twilio.twiml.messaging_response import MessagingResponse
 from twilio.request_validator import RequestValidator
 
-from deepgram_utils import transcribe_audio, get_transcription_status
-from agent import handle_message, cleanup_history, validate_message_content, get_session_info
-from claude_client import ClaudeClient
+# 使用相对导入，确保模块能正确找到
+try:
+    from deepgram_utils import transcribe_audio, get_transcription_status
+    from agent import handle_message, cleanup_history, validate_message_content, get_session_info
+    from claude_client import ClaudeClient
+except ImportError as e:
+    logger = logging.getLogger(__name__)
+    logger.error(f"Import error: {e}")
+    # 为了调试，让我们看看当前目录的内容
+    import sys
+    logger.error(f"Current directory: {os.getcwd()}")
+    logger.error(f"Python path: {sys.path}")
+    logger.error(f"Files in current dir: {os.listdir('.')}")
+    raise
 
 logger = logging.getLogger(__name__)
 
