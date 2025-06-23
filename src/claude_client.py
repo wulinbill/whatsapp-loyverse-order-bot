@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Claude AI客户端模块
+Claude AI客户端模块 (Claude 4 优化版)
 处理与Anthropic Claude API的所有交互
 """
 
@@ -26,15 +26,20 @@ class ClaudeClient:
         # 初始化客户端
         self.client = Anthropic(api_key=self.api_key)
         
-        # 配置模型
-        self.model = os.getenv("CLAUDE_MODEL", "claude-3-5-sonnet-20241022")
+        # 配置模型 - 默认使用 Claude 4 Sonnet
+        self.model = os.getenv("CLAUDE_MODEL", "claude-4-sonnet-20250514")
         
-        # API调用配置
-        self.default_max_tokens = 1500
-        self.timeout = 30
+        # Claude 4 优化的API调用配置
+        self.default_max_tokens = 2000  # Claude 4 可以处理更多tokens
+        self.timeout = 45  # 稍微增加超时时间
         self.max_retries = 3
         
-        logger.info(f"🤖 Claude client initialized with model: {self.model}")
+        # Claude 4 性能提示
+        if "claude-4" in self.model.lower():
+            logger.info(f"🚀 Claude 4 client initialized: {self.model}")
+            logger.info("⚡ Enhanced performance and reasoning capabilities enabled")
+        else:
+            logger.info(f"🤖 Claude client initialized with model: {self.model}")
     
     def chat(self, messages: List[Dict[str, str]], **kwargs) -> str:
         """
@@ -48,9 +53,13 @@ class ClaudeClient:
             Claude的回复内容
         """
         try:
-            # 处理参数
+            # Claude 4 优化的参数处理
             max_tokens = kwargs.get('max_tokens', self.default_max_tokens)
             temperature = kwargs.get('temperature', 0.7)
+            
+            # Claude 4 支持更精细的温度控制
+            if "claude-4" in self.model.lower():
+                temperature = min(max(temperature, 0.0), 1.0)  # 确保范围正确
             
             # 分离系统消息和对话历史
             system_message = ""
@@ -69,7 +78,7 @@ class ClaudeClient:
             if not conversation or conversation[0]["role"] != "user":
                 raise ValueError("Conversation must start with a user message")
             
-            logger.debug(f"Sending {len(conversation)} messages to Claude")
+            logger.debug(f"Sending {len(conversation)} messages to {self.model}")
             
             # 调用Claude API (使用重试机制)
             response = self._make_api_call_with_retry(
@@ -82,7 +91,7 @@ class ClaudeClient:
             # 提取回复内容
             if response.content and len(response.content) > 0:
                 reply = response.content[0].text
-                logger.info(f"✅ Claude responded: {reply[:100]}{'...' if len(reply) > 100 else ''}")
+                logger.info(f"✅ {self.model} responded: {reply[:100]}{'...' if len(reply) > 100 else ''}")
                 return reply
             else:
                 logger.error("Empty response from Claude API")
@@ -114,14 +123,15 @@ class ClaudeClient:
                 
             except RateLimitError as e:
                 last_error = e
-                wait_time = (2 ** attempt) * 1  # 指数退避
+                # Claude 4 可能有不同的速率限制
+                wait_time = (2 ** attempt) * 2  # 稍微增加等待时间
                 logger.warning(f"Rate limit hit, retrying in {wait_time}s (attempt {attempt + 1}/{self.max_retries})")
                 time.sleep(wait_time)
                 
             except APITimeoutError as e:
                 last_error = e
                 logger.warning(f"API timeout, retrying (attempt {attempt + 1}/{self.max_retries})")
-                time.sleep(1)
+                time.sleep(2)
                 
             except APIError as e:
                 # 对于4xx错误，不重试
@@ -176,11 +186,19 @@ class ClaudeClient:
                 messages=[{"role": "user", "content": "Hi"}]
             )
             
+            # Claude 4 特殊标识
+            model_info = {
+                "model": self.model,
+                "is_claude_4": "claude-4" in self.model.lower(),
+                "max_tokens": self.default_max_tokens,
+                "timeout": self.timeout
+            }
+            
             return {
                 "status": "healthy",
-                "model": self.model,
                 "api_accessible": True,
-                "message": "Claude client is working properly"
+                "message": f"Claude client is working properly with {self.model}",
+                **model_info
             }
             
         except Exception as e:
@@ -201,7 +219,29 @@ class ClaudeClient:
         """
         return {
             "model": self.model,
+            "is_claude_4": "claude-4" in self.model.lower(),
             "max_tokens": self.default_max_tokens,
             "timeout": self.timeout,
-            "max_retries": self.max_retries
+            "max_retries": self.max_retries,
+            "capabilities": self._get_model_capabilities()
         }
+    
+    def _get_model_capabilities(self) -> Dict[str, Any]:
+        """
+        获取模型能力信息
+        
+        Returns:
+            模型能力字典
+        """
+        if "claude-4" in self.model.lower():
+            return {
+                "enhanced_reasoning": True,
+                "improved_accuracy": True,
+                "better_multilingual": True,
+                "larger_context": True,
+                "faster_responses": True
+            }
+        else:
+            return {
+                "standard_capabilities": True
+            }
