@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Claude 4直接菜单匹配代理
+Claude 4直接菜单匹配代理 - 修复版本
 完全由Claude 4负责菜单识别、匹配和订单处理
 """
 
@@ -127,10 +127,14 @@ def build_claude_menu_context() -> str:
 def create_claude_direct_prompt() -> str:
     """
     创建Claude 4直接处理菜单的系统提示
+    修复字符串格式化错误
     """
     menu_section = build_claude_menu_context()
     
-    return f"""
+    # 修复：避免在f-string中使用大括号，改用字符串拼接
+    json_example = '##JSON##' + '{"sentences":["数量 NombreExacto", "数量 NombreExacto"]}'
+    
+    prompt = f"""
 你是Kong Food Restaurant的智能订餐助手，专精中式波多黎各融合料理。
 
 {menu_section}
@@ -178,7 +182,7 @@ Tenemos estas opciones para 2 presas de pollo:
 
 #### ⑤ JSON输出 (只在确认后)
 当客户确认后，输出JSON格式:
-##JSON##{"sentences":["数量 完整菜品名", "数量 完整菜品名"]}
+{json_example}
 
 **重要**: 使用菜单中的确切名称，如:
 - "1 Pollo Naranja" (不是 "1 pollo naranja")
@@ -226,6 +230,8 @@ Tenemos estas opciones para 2 presas de pollo:
 
 记住: 你是菜单专家，直接使用你的智能来匹配和确认订单，无需依赖外部搜索!
 """
+    
+    return prompt
 
 class ClaudeDirectMenuAgent:
     """
