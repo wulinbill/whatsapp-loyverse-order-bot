@@ -215,7 +215,7 @@ Elige el mejor match basado en el contexto y precio mencionado por el cliente.
         """Detecta mensajes de confirmación con contexto más amplio y robusto"""
         import unicodedata, re
 
-        # Normalizar texto del usuario
+        # Helper interno (definir solo una vez)
         def _norm(s: str) -> str:
             s = unicodedata.normalize('NFD', s)
             s = ''.join(c for c in s if unicodedata.category(c) != 'Mn')  # remove accents
@@ -224,13 +224,38 @@ Elige el mejor match basado en el contexto y precio mencionado por el cliente.
 
         text_clean = _norm(text)
 
+        # ──────────────── ① 单词 & 短语白名单 ────────────────
+        # 单词（去重音、全小写）
         confirmation_words = {
-            'si', 'sí', 'yes', 'ok', 'okay', 'correcto',
-            'correct', 'bien', 'perfecto', 'listo', 'vale'
+            # monosílabos
+            'si', 'sí', 'ya', 'dale', 'vale',
+            # inglés
+            'yes', 'ok', 'okay',
+            # afirmaciones
+            'correcto', 'correct', 'bien', 'perfecto',
+            'listo', 'procede', 'proceder'
         }
 
-        # Solo procede si el texto contiene una palabra de confirmación
-        if not any(word == text_clean or word == _norm(part) for word in confirmation_words for part in text.split()):
+        # 多词短语（仍用无重音+小写比较）
+        confirmation_phrases = {
+            'es todo', 'eso es todo', 'es todos', 'eso seria todo',
+            'ya esta', 'ya está', 'esta bien', 'todo bien'
+        }
+
+        # ──────────────── ② 判定逻辑 ────────────────
+        has_word = any(
+            word == text_clean or word == _norm(part)
+            for word in confirmation_words
+            for part in text.split()
+        )
+
+        has_phrase = any(
+            phrase.replace(' ', '') == text_clean.replace(' ', '')  # 全句匹配
+            or phrase in text_clean                                   # 句中包含
+            for phrase in confirmation_phrases
+        )
+
+        if not (has_word or has_phrase):
             return False
 
         # Ampliar la ventana de búsqueda del mensaje del asistente con el resumen
@@ -355,7 +380,7 @@ Elige el mejor match basado en el contexto y precio mencionado por el cliente.
                 
                 # Extraer items con formato "- X [nombre] ($Y.YY)"
                 import re
-                pattern = r'-\s*(\d+)?\s*([^($]+)\s*\(\$?([\d.]+)\)'
+                pattern = r'[\-•]\s*(\d+)?\s*([^($]+?)\s*\(\$?([\d.]+)\)'
                 matches = re.findall(pattern, content)
                 
                 for match in matches:
