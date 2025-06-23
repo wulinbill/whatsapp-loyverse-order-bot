@@ -11,6 +11,30 @@ from datetime import datetime
 
 logger = logging.getLogger(__name__)
 
+# ---------------------------------------------------------------------------
+# 基础常量与辅助函数（避免循环导入问题）
+# ---------------------------------------------------------------------------
+
+# Loyverse API 基础 URL 与超时，可通过环境变量覆盖
+BASE_URL = os.getenv("LOYVERSE_BASE_URL", "https://api.loyverse.com/v1.0")
+# 默认 HTTP 超时（秒）
+API_TIMEOUT: float = float(os.getenv("LOYVERSE_API_TIMEOUT", "15"))
+
+
+def get_access_token() -> str:
+    """包装 loyverse_auth.get_access_token，避免循环导入"""
+    try:
+        from loyverse_auth import get_access_token as _ga
+        return _ga()
+    except ImportError as e:
+        logger.error(f"Cannot import loyverse_auth.get_access_token: {e}")
+        raise
+
+
+def get_default_payment_type_id() -> str:
+    """从环境变量获取默认支付方式 ID，默认为 'CASH'"""
+    return os.getenv("LOYVERSE_PAYMENT_TYPE_ID", "CASH")
+
 def place_order_with_kds_support(payload: Dict[str, Any]) -> Dict[str, Any]:
     """
     向Loyverse下单并确保KDS显示
