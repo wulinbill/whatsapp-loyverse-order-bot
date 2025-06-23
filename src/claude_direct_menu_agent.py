@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Claude 4直接菜单匹配代理 - 最终修复版
-重新设计确认检测和JSON输出逻辑
+Claude 4直接菜单匹配代理 - 完整修复版
+修复菜单搜索和订单项目丢失问题
 """
 
 import os
@@ -25,8 +25,8 @@ except ImportError as e:
 
 logger = logging.getLogger(__name__)
 
-def build_claude_menu_context() -> str:
-    """为Claude 4构建完整的菜单上下文"""
+def build_complete_menu_context() -> str:
+    """构建完整的菜单上下文 - 包含所有项目"""
     try:
         menu_data = load_menu_data()
         menu_context = "\n## 🍽️ KONG FOOD RESTAURANT 完整菜单:\n\n"
@@ -47,6 +47,11 @@ def build_claude_menu_context() -> str:
                 "emoji": "🍗",
                 "description": "单纯炸鸡配薯条",
                 "price_range": "$3.75-$36.89"
+            },
+            "plato entrada": {
+                "emoji": "🥙",
+                "description": "开胃菜和汤类",
+                "price_range": "$2.79-$9.30"
             }
         }
         
@@ -71,8 +76,8 @@ def build_claude_menu_context() -> str:
                                 category_items.append(item)
             
             if category_items:
-                # 显示主要项目
-                for item in category_items[:5]:  # 只显示前5个避免过长
+                # 显示所有项目 (特别是汤类)
+                for item in category_items:
                     name = item.get("item_name", "")
                     price = item.get("price", 0.0)
                     menu_context += f"**{name}** - ${price:.2f}\n"
@@ -85,100 +90,113 @@ def build_claude_menu_context() -> str:
         logger.error(f"Error building menu context: {e}")
         return "\n## MENÚ: Error loading menu\n\n"
 
-def create_improved_claude_prompt() -> str:
-    """创建改进的Claude提示 - 强调JSON输出"""
-    menu_section = build_claude_menu_context()
+def create_enhanced_claude_prompt() -> str:
+    """创建增强的Claude提示 - 包含完整菜单和订单管理"""
+    menu_section = build_complete_menu_context()
     
     prompt = f"""
 你是Kong Food Restaurant的智能订餐助手。
 
 {menu_section}
 
-## 🎯 核心任务: 准确识别菜品并在确认后输出JSON
+## 🎯 核心任务: 准确识别菜品并管理订单
 
-### 📋 严格流程:
+### 📋 处理流程:
 
 #### ① 欢迎
 "¡Hola! Restaurante Kong Food. ¿Qué desea ordenar hoy?"
 
-#### ② 识别菜品
-直接从上面菜单匹配用户说的菜品:
-- "Combinaciones 2 presa pollo" → "¡Perfecto! Combinaciones 2 presa pollo ($10.29). ¿Algo más?"
-- "pollo naranja" → "¡Perfecto! Pollo Naranja ($11.89). ¿Algo más?"
+#### ② 智能菜品识别
+从上面菜单中匹配用户说的菜品，包括:
+- **模糊匹配**: "sopa china" → "Sopa China Pequeñas" 或 "Sopa China Grandes"
+- **部分匹配**: "sopa" → 显示所有汤类选项
+- **数量识别**: "15 presas pollo" → "15 Presas de Pollo con Papas"
 
-#### ③ 确认订单
+**示例处理:**
+- "sopa china" → "Tenemos Sopa China Pequeñas ($5.69) y Sopa China Grandes ($9.10). ¿Cuál prefiere?"
+- "15 presas pollo" → "¡Perfecto! 15 Presas de Pollo con Papas ($27.89). ¿Algo más?"
+
+#### ③ 订单累积管理
+**重要**: 管理当前订单状态，累积所有项目:
+- 第一个项目: "Su pedido actual: - [项目1]"
+- 添加项目: "Su pedido actualizado: - [项目1] - [项目2]"
+- 始终显示完整订单列表
+
+#### ④ 最终确认
 当用户说完所有菜品后:
-"Confirmo su pedido:
-- [菜品列表]
+"Confirmo su pedido completo:
+- [所有项目列表]
+Total estimado: $[总计]
 ¿Está correcto para procesar?"
 
-#### ④ **关键步骤** - JSON输出
-**当用户确认时 (说任何确认词如: si, sí, yes, ok, correcto, bien, listo, vale)，立即输出JSON:**
+#### ⑤ 订单处理
+当用户确认时，处理完整订单列表。
 
-##JSON##
-然后紧接着输出: 
-{{"sentences":["1 Combinaciones 2 presa pollo"]}}
+### 🔍 菜单搜索规则:
 
-**重要**: 
-- 使用菜单中的确切名称
-- 包含数量 + 完整菜品名
-- 必须在确认后立即输出
-- 不要添加其他文字
+1. **精确匹配**: 直接找到项目
+2. **模糊匹配**: 
+   - "sopa" → 显示所有汤类
+   - "pollo" → 显示所有鸡肉类
+3. **数量处理**: 
+   - "15 presas" → "15 Presas de Pollo con Papas"
+   - "3 tostones" → "Tostones (8 pedazos)" (最接近的)
 
-#### ⑤ 系统自动处理
-JSON输出后系统会自动处理订单并显示收据。
+### 📝 订单状态管理:
 
-### ⚠️ 关键规则:
+**关键**: 始终跟踪和显示完整的订单状态:
+- 用户添加项目时，累积到现有订单
+- 确认时处理所有累积的项目
+- 不要丢失任何已添加的项目
 
-✅ **确认后必须做**:
-1. 检测到确认词 (si, sí, yes, ok, correcto, bien, listo, vale)
-2. 立即输出: ##JSON##
-3. 立即输出: {{"sentences":["数量 菜品名"]}}
-4. 等待系统处理
+### ⚠️ 重要规则:
 
-❌ **绝不做**:
-- 确认后不输出JSON
-- 重新开始对话
-- 添加JSON后的额外文字
+✅ **必须做**:
+- 识别菜单中的所有项目（包括汤类）
+- 累积管理订单状态
+- 确认时处理完整订单
+- 提供清晰的菜品选项
 
-### 💡 完整示例:
+❌ **避免**:
+- 说"没有"某个菜品而不先搜索
+- 处理订单时丢失项目
+- 重复处理相同订单
+- 忽略已添加的项目
 
-用户: "Combinaciones 2 presa pollo"
-你: "¡Perfecto! Combinaciones 2 presa pollo ($10.29). ¿Algo más?"
-
-用户: "Es todo"
-你: "Confirmo su pedido: - Combinaciones 2 presa pollo ($10.29) ¿Está correcto para procesar?"
-
-用户: "Si"
-你: ##JSON##
-{{"sentences":["1 Combinaciones 2 presa pollo"]}}
-
-记住: 确认后的JSON输出是触发订单处理的唯一方式！
+记住: 完整准确地管理整个订单过程！
 """
     
     return prompt
 
-class ClaudeDirectMenuAgentFinal:
-    """Claude 4直接菜单处理代理 - 最终修复版"""
+class ClaudeCompleteAgent:
+    """Claude完整修复版代理"""
     
     def __init__(self):
         self.claude_client = ClaudeClient()
-        self.system_prompt = create_improved_claude_prompt()
+        self.system_prompt = create_enhanced_claude_prompt()
+        self.processed_orders = set()  # 跟踪已处理的订单
         
-        logger.info("🧠 Claude 4 Direct Menu Agent (Final Fix) initialized")
+        logger.info("🧠 Claude Complete Agent initialized")
 
     def handle_message(self, from_id: str, text: str, history: List[Dict[str, str]]) -> str:
-        """处理消息 - 重新设计的逻辑"""
+        """处理消息 - 完整版本"""
         try:
             logger.info(f"🧠 Processing: '{text}' for {from_id}")
             
             # 添加用户消息到历史
             history.append({"role": "user", "content": text})
             
-            # **关键修改**: 先检查是否是确认，如果是则强制处理JSON
+            # 检查是否是确认并且还没有处理过
             if self.is_confirmation_message(text, history):
-                logger.info("🎯 CONFIRMATION DETECTED - Processing order")
-                return self.handle_confirmation_and_order(history, from_id)
+                order_hash = self.get_order_hash(history)
+                
+                if order_hash not in self.processed_orders:
+                    logger.info("🎯 CONFIRMATION DETECTED - Processing new order")
+                    self.processed_orders.add(order_hash)
+                    return self.handle_confirmation_and_order(history, from_id)
+                else:
+                    logger.info("⏭️ Order already processed, skipping")
+                    return "Esta orden ya ha sido procesada. ¿Desea hacer un nuevo pedido?"
             
             # 否则正常处理对话
             return self.handle_normal_message(history)
@@ -187,25 +205,38 @@ class ClaudeDirectMenuAgentFinal:
             logger.error(f"❌ Error processing message: {e}", exc_info=True)
             return "Disculpe, hubo un error técnico. ¿Podría repetir su mensaje?"
 
+    def get_order_hash(self, history: List[Dict[str, str]]) -> str:
+        """生成订单的唯一标识"""
+        try:
+            # 提取订单项目
+            order_items = self.extract_order_items_from_history(history)
+            
+            # 创建订单签名
+            order_signature = ""
+            for item in order_items:
+                order_signature += f"{item['quantity']}x{item['name']};"
+            
+            return hash(order_signature)
+        except:
+            return ""
+
     def is_confirmation_message(self, text: str, history: List[Dict[str, str]]) -> bool:
-        """检测是否是确认消息 - 简化逻辑"""
+        """检测确认消息"""
         text_clean = text.lower().strip()
         
-        # 确认词列表
+        # 确认词
         confirmation_words = [
             'si', 'sí', 'yes', 'ok', 'okay', 'correcto', 'correct', 
             'bien', 'perfecto', 'listo', 'vale', 'procesar', 'confirmar',
             '是', '对', '好', '确认'
         ]
         
-        # 检查是否包含确认词
         has_confirmation_word = any(word == text_clean or word in text_clean.split() for word in confirmation_words)
         
-        # 检查上下文 - 最近是否有确认请求
+        # 检查上下文
         has_confirmation_context = False
         if len(history) >= 2:
-            # 检查最后几条助手消息
-            for msg in reversed(history[-4:]):  # 检查最近4条消息
+            for msg in reversed(history[-4:]):
                 if msg.get("role") == "assistant":
                     content = msg.get("content", "").lower()
                     if any(phrase in content for phrase in [
@@ -216,24 +247,23 @@ class ClaudeDirectMenuAgentFinal:
                         break
         
         result = has_confirmation_word and has_confirmation_context
-        
-        logger.info(f"🔍 Confirmation check: text='{text}', word={has_confirmation_word}, context={has_confirmation_context}, result={result}")
+        logger.info(f"🔍 Confirmation: word={has_confirmation_word}, context={has_confirmation_context}, result={result}")
         
         return result
 
     def handle_confirmation_and_order(self, history: List[Dict[str, str]], from_id: str) -> str:
-        """处理确认并直接处理订单"""
+        """处理确认并处理完整订单"""
         try:
-            logger.info("🛒 Handling confirmation and processing order")
+            logger.info("🛒 Processing complete order")
             
-            # 从历史中提取订单信息
-            order_items = self.extract_order_items_from_history(history)
+            # 提取所有订单项目
+            order_items = self.extract_complete_order_from_history(history)
             
             if not order_items:
-                logger.warning("No order items found in history")
-                return "Lo siento, no pude encontrar los detalles de su pedido. ¿Podría repetir su orden?"
+                logger.warning("No order items found")
+                return "No pude encontrar los detalles de su pedido. ¿Podría repetir su orden?"
             
-            logger.info(f"📋 Extracted order items: {order_items}")
+            logger.info(f"📋 Complete order items: {order_items}")
             
             # 转换为POS格式
             pos_items = self.convert_items_to_pos_format(order_items)
@@ -242,7 +272,7 @@ class ClaudeDirectMenuAgentFinal:
                 logger.warning("Failed to convert items to POS format")
                 return "No pude procesar los items del pedido. ¿Podría verificar su orden?"
             
-            # 直接提交到POS系统
+            # 提交到POS系统
             receipt_number = place_loyverse_order(pos_items)
             
             # 计算总金额
@@ -254,7 +284,7 @@ class ClaudeDirectMenuAgentFinal:
                 pos_items, actual_total, receipt_number
             )
             
-            logger.info(f"✅ Order processed successfully: Receipt #{receipt_number}, Total: ${actual_total:.2f}")
+            logger.info(f"✅ Complete order processed: Receipt #{receipt_number}, Total: ${actual_total:.2f}")
             
             # 添加助手回复到历史
             history.append({"role": "assistant", "content": confirmation})
@@ -262,15 +292,15 @@ class ClaudeDirectMenuAgentFinal:
             return confirmation
             
         except Exception as e:
-            logger.error(f"❌ Error handling confirmation and order: {e}", exc_info=True)
+            logger.error(f"❌ Error handling order: {e}", exc_info=True)
             return "Hubo un error procesando su orden. Por favor intente nuevamente."
 
-    def extract_order_items_from_history(self, history: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """从对话历史中提取订单项目"""
+    def extract_complete_order_from_history(self, history: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """从历史中提取完整订单 - 包括所有累积的项目"""
         order_items = []
         
         try:
-            # 查找确认订单的消息
+            # 查找最近的完整订单确认
             for msg in reversed(history):
                 if msg.get("role") == "assistant":
                     content = msg.get("content", "")
@@ -281,13 +311,13 @@ class ClaudeDirectMenuAgentFinal:
                         for line in lines:
                             line = line.strip()
                             if line.startswith('-') or line.startswith('•'):
-                                # 解析: "- *1 Combinaciones 2 presa pollo* ($10.29)"
+                                # 解析项目行
                                 item_text = line[1:].strip()
                                 
                                 # 移除格式字符
                                 item_text = item_text.replace('*', '').strip()
                                 
-                                # 提取名称（去掉价格）
+                                # 提取名称和数量
                                 if '(' in item_text and '$' in item_text:
                                     name_part = item_text.split('(')[0].strip()
                                     
@@ -295,11 +325,16 @@ class ClaudeDirectMenuAgentFinal:
                                     quantity = 1
                                     dish_name = name_part
                                     
-                                    # 检查是否有数量前缀
-                                    if name_part and name_part[0].isdigit():
-                                        parts = name_part.split(' ', 1)
-                                        if len(parts) >= 2 and parts[0].isdigit():
-                                            quantity = int(parts[0])
+                                    # 检查数量前缀
+                                    words = name_part.split()
+                                    if words and words[0].isdigit():
+                                        quantity = int(words[0])
+                                        dish_name = ' '.join(words[1:])
+                                    elif 'x' in name_part:
+                                        # 处理 "15x Pollo Frito" 格式
+                                        parts = name_part.split('x', 1)
+                                        if len(parts) == 2 and parts[0].strip().isdigit():
+                                            quantity = int(parts[0].strip())
                                             dish_name = parts[1].strip()
                                     
                                     order_items.append({
@@ -310,43 +345,59 @@ class ClaudeDirectMenuAgentFinal:
                         if order_items:
                             break
             
-            # 如果没找到确认消息，尝试从对话中提取
+            # 如果没找到确认消息，从对话流程中提取
             if not order_items:
-                order_items = self.extract_from_conversation_flow(history)
+                order_items = self.extract_from_conversation_mentions(history)
             
-            logger.info(f"📋 Extracted order items: {order_items}")
+            logger.info(f"📋 Extracted complete order: {order_items}")
             return order_items
             
         except Exception as e:
-            logger.error(f"Error extracting order items: {e}")
+            logger.error(f"Error extracting complete order: {e}")
             return []
 
-    def extract_from_conversation_flow(self, history: List[Dict[str, str]]) -> List[Dict[str, Any]]:
-        """从对话流程中提取订单"""
+    def extract_from_conversation_mentions(self, history: List[Dict[str, str]]) -> List[Dict[str, Any]]:
+        """从对话中提取所有提到的菜品"""
         order_items = []
         
         try:
-            # 查找助手确认的菜品
+            # 查找所有助手确认的菜品
             for msg in history:
                 if msg.get("role") == "assistant":
                     content = msg.get("content", "")
                     
-                    # 查找 "¡Perfecto! [菜品] ($价格)" 模式
+                    # 查找确认菜品的模式
                     if "perfecto" in content.lower() and "$" in content:
-                        # 使用正则提取菜品名
+                        # 提取菜品信息
                         import re
-                        pattern = r'perfecto.*?([A-Za-z][^($]*?)\s*\(\$[\d.]+\)'
-                        matches = re.findall(pattern, content, re.IGNORECASE)
                         
-                        for match in matches:
-                            dish_name = match.strip().replace('*', '').replace('!', '')
-                            if dish_name:
-                                order_items.append({
-                                    "quantity": 1,
-                                    "name": dish_name
-                                })
+                        # 匹配不同的模式
+                        patterns = [
+                            r'perfecto.*?(\d+)\s*presas.*?pollo.*?\(\$[\d.]+\)',  # "15 presas pollo"
+                            r'perfecto.*?([A-Za-z][^($]*?)\s*\(\$[\d.]+\)',      # 一般菜品
+                        ]
+                        
+                        for pattern in patterns:
+                            matches = re.findall(pattern, content, re.IGNORECASE)
+                            for match in matches:
+                                if match.isdigit():
+                                    # 数量匹配，这是presas
+                                    quantity = int(match)
+                                    dish_name = f"{quantity} Presas de Pollo con Papas"
+                                    order_items.append({
+                                        "quantity": 1,  # 作为一个整体订单
+                                        "name": dish_name
+                                    })
+                                else:
+                                    # 菜品名称匹配
+                                    dish_name = match.strip().replace('*', '').replace('!', '')
+                                    if dish_name:
+                                        order_items.append({
+                                            "quantity": 1,
+                                            "name": dish_name
+                                        })
             
-            # 去重
+            # 去重但保持顺序
             unique_items = []
             seen = set()
             for item in order_items:
@@ -362,36 +413,40 @@ class ClaudeDirectMenuAgentFinal:
             return []
 
     def convert_items_to_pos_format(self, order_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """转换为POS格式"""
+        """转换为POS格式 - 改进的菜品匹配"""
         try:
             menu_data = load_menu_data()
             pos_items = []
             
-            # 构建菜单映射
+            # 构建更完整的菜单映射
             menu_map = {}
             for category in menu_data.get("menu_categories", {}).values():
                 if isinstance(category, dict) and "items" in category:
                     for item in category["items"]:
                         item_name = item.get("item_name", "")
                         if item_name:
+                            # 精确名称
                             menu_map[item_name.lower()] = item
+                            
+                            # 关键词匹配
+                            keywords = item_name.lower().split()
+                            for keyword in keywords:
+                                if len(keyword) >= 3:  # 避免太短的词
+                                    if keyword not in menu_map:
+                                        menu_map[keyword] = []
+                                    if isinstance(menu_map[keyword], list):
+                                        menu_map[keyword].append(item)
+                                    else:
+                                        menu_map[keyword] = [menu_map[keyword], item]
             
             for order_item in order_items:
                 dish_name = order_item["name"]
                 quantity = order_item["quantity"]
                 
-                # 查找匹配的菜单项目
-                menu_item = None
+                logger.info(f"🔍 Looking for: '{dish_name}'")
                 
-                # 精确匹配
-                if dish_name.lower() in menu_map:
-                    menu_item = menu_map[dish_name.lower()]
-                else:
-                    # 部分匹配
-                    for menu_name, item in menu_map.items():
-                        if dish_name.lower() in menu_name or menu_name in dish_name.lower():
-                            menu_item = item
-                            break
+                # 查找匹配的菜单项目
+                menu_item = self.find_best_menu_match(dish_name, menu_map)
                 
                 if menu_item:
                     pos_items.append({
@@ -409,6 +464,62 @@ class ClaudeDirectMenuAgentFinal:
         except Exception as e:
             logger.error(f"Error converting to POS format: {e}")
             return []
+
+    def find_best_menu_match(self, dish_name: str, menu_map: Dict) -> Optional[Dict]:
+        """找到最佳菜单匹配"""
+        dish_lower = dish_name.lower()
+        
+        # 1. 精确匹配
+        if dish_lower in menu_map and isinstance(menu_map[dish_lower], dict):
+            return menu_map[dish_lower]
+        
+        # 2. 特殊处理：presas de pollo
+        if "presas" in dish_lower and "pollo" in dish_lower:
+            # 提取数量
+            import re
+            number_match = re.search(r'(\d+)', dish_lower)
+            if number_match:
+                number = int(number_match.group(1))
+                
+                # 查找对应的presas项目
+                for item_name, item in menu_map.items():
+                    if isinstance(item, dict) and "presas de pollo con papas" in item_name:
+                        if str(number) in item_name:
+                            return item
+        
+        # 3. 关键词匹配
+        dish_words = dish_lower.split()
+        best_match = None
+        best_score = 0
+        
+        for word in dish_words:
+            if word in menu_map:
+                candidates = menu_map[word]
+                if isinstance(candidates, dict):
+                    candidates = [candidates]
+                elif not isinstance(candidates, list):
+                    continue
+                
+                for candidate in candidates:
+                    if isinstance(candidate, dict):
+                        # 计算匹配度
+                        candidate_name = candidate.get("item_name", "").lower()
+                        score = sum(1 for w in dish_words if w in candidate_name)
+                        
+                        if score > best_score:
+                            best_score = score
+                            best_match = candidate
+        
+        # 4. 部分匹配
+        if not best_match:
+            for item_name, item in menu_map.items():
+                if isinstance(item, dict):
+                    item_name_lower = item.get("item_name", "").lower()
+                    if any(word in item_name_lower for word in dish_words):
+                        best_match = item
+                        break
+        
+        return best_match
 
     def generate_final_confirmation(self, pos_items: List[Dict], total: float, receipt_number: str) -> str:
         """生成最终确认消息"""
@@ -449,7 +560,7 @@ class ClaudeDirectMenuAgentFinal:
             # 调用Claude
             reply = self.claude_client.chat(
                 messages, 
-                max_tokens=2000,
+                max_tokens=2500,
                 temperature=0.1
             )
             
@@ -465,23 +576,24 @@ class ClaudeDirectMenuAgentFinal:
     def get_debug_info(self) -> Dict[str, Any]:
         """获取调试信息"""
         return {
-            "type": "claude_direct_menu_agent_final_fix",
-            "confirmation_logic": "simplified_and_reliable",
-            "order_processing": "direct_pos_integration",
-            "json_output": "bypassed_for_reliability"
+            "type": "claude_complete_agent",
+            "menu_search": "enhanced_fuzzy_matching",
+            "order_management": "cumulative_tracking",
+            "duplicate_prevention": "order_hash_tracking",
+            "processed_orders": len(self.processed_orders)
         }
 
 # 全局实例
-_claude_direct_agent = None
+_claude_complete_agent = None
 
-def get_claude_direct_agent() -> ClaudeDirectMenuAgentFinal:
-    """获取Claude直接菜单代理的全局实例"""
-    global _claude_direct_agent
-    if _claude_direct_agent is None:
-        _claude_direct_agent = ClaudeDirectMenuAgentFinal()
-    return _claude_direct_agent
+def get_claude_direct_agent() -> ClaudeCompleteAgent:
+    """获取Claude完整代理的全局实例"""
+    global _claude_complete_agent
+    if _claude_complete_agent is None:
+        _claude_complete_agent = ClaudeCompleteAgent()
+    return _claude_complete_agent
 
 def handle_message_claude_direct(from_id: str, text: str, history: List[Dict[str, str]]) -> str:
-    """Claude直接菜单匹配的消息处理入口函数"""
+    """Claude完整代理的消息处理入口函数"""
     agent = get_claude_direct_agent()
     return agent.handle_message(from_id, text, history)
