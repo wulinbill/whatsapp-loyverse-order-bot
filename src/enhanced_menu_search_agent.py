@@ -212,25 +212,41 @@ Elige el mejor match basado en el contexto y precio mencionado por el cliente.
         return "\n".join(formatted)
     
     def _is_confirmation(self, text: str, history: List[Dict[str, str]]) -> bool:
-        """Detecta mensajes de confirmación"""
-        text_clean = text.lower().strip()
-        
-        confirmation_words = [
+        """Detecta mensajes de confirmación con contexto más amplio y robusto"""
+        import unicodedata, re
+
+        # Normalizar texto del usuario
+        def _norm(s: str) -> str:
+            s = unicodedata.normalize('NFD', s)
+            s = ''.join(c for c in s if unicodedata.category(c) != 'Mn')  # remove accents
+            s = re.sub(r'[^\w\s]', '', s)  # remove punctuation
+            return s.lower().strip()
+
+        text_clean = _norm(text)
+
+        confirmation_words = {
             'si', 'sí', 'yes', 'ok', 'okay', 'correcto',
             'correct', 'bien', 'perfecto', 'listo', 'vale'
-        ]
-        
-        # Verificar contexto
-        if len(history) >= 2:
-            last_assistant = None
-            for msg in reversed(history[-4:]):
-                if msg.get("role") == "assistant":
-                    last_assistant = msg.get("content", "").lower()
-                    break
-            
-            if last_assistant and "correcto para procesar" in last_assistant:
-                return any(word == text_clean or word in text_clean.split() for word in confirmation_words)
-        
+        }
+
+        # Solo procede si el texto contiene una palabra de confirmación
+        if not any(word == text_clean or word == _norm(part) for word in confirmation_words for part in text.split()):
+            return False
+
+        # Ampliar la ventana de búsqueda del mensaje del asistente con el resumen
+        search_window = history[-10:] if len(history) >= 10 else history
+
+        # Buscar el último mensaje del asistente que pida confirmación
+        for msg in reversed(search_window):
+            if msg.get("role") == "assistant":
+                assistant_text = _norm(msg.get("content", ""))
+                if "correcto para procesar" in assistant_text:
+                    return True
+                # También aceptar variantes comunes
+                if "confirmar" in assistant_text and "pedido" in assistant_text:
+                    return True
+                break  # Encontrado mensaje assistant pero no es confirmación, salir
+
         return False
     
     def _get_order_hash(self, history: List[Dict[str, str]]) -> str:
@@ -284,6 +300,11 @@ Elige el mejor match basado en el contexto y precio mencionado por el cliente.
             )
             
             history.append({"role": "assistant", "content": confirmation})
+            
+            # 🧹 Después de confirmar la orden, limpiamos el historial para iniciar un nuevo flujo
+            # Mantiene solo la última confirmación para referencia
+            if len(history) > 1:
+                history[:] = history[-1:]
             
             return confirmation
             
