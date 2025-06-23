@@ -1,10 +1,24 @@
 services:
   - type: web
-    name: whatsapp-order-bot
+    name: kong-food-whatsapp-bot
     env: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
-    startCommand: "gunicorn main:app --workers 2 --log-level info"
+    region: oregon
+    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
+    startCommand: "gunicorn main:app --workers 2 --bind 0.0.0.0:$PORT --log-level info --timeout 120"
     envVars:
       - key: PORT
         value: "10000"
+      - key: PYTHONPATH
+        value: "/opt/render/project/src"
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: LOG_LEVEL
+        value: "INFO"
+    # 持久化存储用于token缓存
+    disk:
+      name: loyverse-tokens
+      mountPath: /mnt/data
+      sizeGB: 1
+    # 健康检查配置
+    healthCheckPath: /health
