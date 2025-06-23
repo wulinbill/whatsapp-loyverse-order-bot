@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Deepgram语音转文字工具模块
+Deepgram语音转文字工具模块 (Nova-3 优化版)
 处理音频转录和相关功能
 """
 
@@ -42,7 +42,7 @@ def transcribe_audio(url: str, max_retries: int = 3) -> str:
     
     for attempt in range(max_retries):
         try:
-            logger.info(f"🎤 Transcribing audio (attempt {attempt + 1}/{max_retries}): {url[:50]}...")
+            logger.info(f"🎤 Transcribing audio with Nova-3 (attempt {attempt + 1}/{max_retries}): {url[:50]}...")
             
             # 验证环境变量
             auth_sid = os.getenv("TWILIO_ACCOUNT_SID")
@@ -65,11 +65,11 @@ def transcribe_audio(url: str, max_retries: int = 3) -> str:
             
             logger.info(f"📁 Downloaded audio file: {len(audio_bytes)} bytes")
             
-            # 执行转录
-            transcript = perform_transcription(audio_bytes)
+            # 执行转录 - 使用Nova-3模型
+            transcript = perform_transcription_nova3(audio_bytes)
             
             if transcript:
-                logger.info(f"✅ Transcription successful: '{transcript[:50]}{'...' if len(transcript) > 50 else ''}'")
+                logger.info(f"✅ Nova-3 transcription successful: '{transcript[:50]}{'...' if len(transcript) > 50 else ''}'")
                 return transcript.strip()
             else:
                 raise ValueError("Transcription returned empty result")
@@ -121,9 +121,9 @@ def download_audio_file(url: str, auth_sid: str, auth_token: str) -> bytes:
     except Exception as e:
         raise Exception(f"Failed to download audio: {str(e)}")
 
-def perform_transcription(audio_bytes: bytes) -> str:
+def perform_transcription_nova3(audio_bytes: bytes) -> str:
     """
-    执行音频转录
+    使用Nova-3模型执行音频转录
     
     Args:
         audio_bytes: 音频文件字节数据
@@ -138,9 +138,9 @@ def perform_transcription(audio_bytes: bytes) -> str:
         # 创建文件源
         payload = FileSource(audio_bytes)
         
-        # 配置转录选项
+        # Nova-3 优化配置
         options = PrerecordedOptions(
-            model="nova-2",  # 使用最新的Nova-2模型
+            model="nova-3",  # 使用Nova-3模型
             punctuate=True,
             smart_format=True,
             language="multi",  # 支持多语言自动检测
@@ -150,8 +150,26 @@ def perform_transcription(audio_bytes: bytes) -> str:
             diarize=False,  # 不需要说话人识别
             utterances=False,  # 不需要话语分割
             alternatives=1,  # 只返回最佳结果
-            tier="enhanced"  # 使用增强层获得更好质量
+            tier="enhanced",  # 使用增强层获得更好质量
+            
+            # Nova-3 特有的高级功能
+            numerals=True,  # 改进数字识别
+            measurements=True,  # 改进度量单位识别
+            search=True,  # 优化搜索相关内容
+            
+            # 针对餐厅订餐优化的设置
+            keywords=["pollo", "arroz", "papa", "tostones", "combo", "combinacion", "salsa"],  # 餐厅关键词
+            
+            # Nova-3 支持的语言特定优化
+            language_detection=True,
+            multichannel=False,
+            
+            # 提高准确性的设置
+            endpointing=300,  # 语音结束检测时间（毫秒）
+            vad_turnoff=500,  # 语音活动检测关闭时间
         )
+        
+        logger.info("🚀 Using Nova-3 model for enhanced transcription accuracy")
         
         # 执行转录
         response = client.listen.prerecorded.v("1").transcribe_file(payload, options)
@@ -162,7 +180,7 @@ def perform_transcription(audio_bytes: bytes) -> str:
         return transcript
         
     except Exception as e:
-        raise Exception(f"Deepgram transcription failed: {str(e)}")
+        raise Exception(f"Nova-3 transcription failed: {str(e)}")
 
 def extract_transcript_from_response(response) -> str:
     """
@@ -192,15 +210,24 @@ def extract_transcript_from_response(response) -> str:
         confidence = alternatives[0].get("confidence", 0.0)
         
         # 记录置信度
-        logger.info(f"📊 Transcription confidence: {confidence:.2f}")
+        logger.info(f"📊 Nova-3 transcription confidence: {confidence:.2f}")
         
         if confidence < 0.3:
             logger.warning(f"⚠️ Low transcription confidence: {confidence:.2f}")
+        elif confidence > 0.8:
+            logger.info(f"🎯 High confidence transcription with Nova-3")
         
         # 检测语言
         detected_language = results.get("detected_language")
         if detected_language:
-            logger.info(f"🌍 Detected language: {detected_language}")
+            logger.info(f"🌍 Nova-3 detected language: {detected_language}")
+        
+        # Nova-3 特有的元数据
+        metadata = results.get("metadata", {})
+        if metadata:
+            model_info = metadata.get("model_info", {})
+            if model_info:
+                logger.debug(f"🤖 Nova-3 model info: {model_info}")
         
         return transcript
         
@@ -230,12 +257,14 @@ def get_transcription_status() -> Dict[str, Any]:
         client = get_deepgram_client()
         
         # 测试一个小的音频文件（静音）
-        # 注意：这里创建一个最小的WAV文件用于测试
         test_audio = create_test_audio()
         
         if test_audio:
             payload = FileSource(test_audio)
-            options = PrerecordedOptions(model="nova-2", language="en")
+            options = PrerecordedOptions(
+                model="nova-3",  # 使用Nova-3进行测试
+                language="en"
+            )
             
             # 执行测试转录
             response = client.listen.prerecorded.v("1").transcribe_file(payload, options)
@@ -243,13 +272,21 @@ def get_transcription_status() -> Dict[str, Any]:
             return {
                 "status": "healthy",
                 "service": "deepgram",
-                "model": "nova-2",
-                "features": ["multi-language", "punctuation", "smart_format"]
+                "model": "nova-3",
+                "features": [
+                    "multi-language", 
+                    "punctuation", 
+                    "smart_format",
+                    "enhanced_accuracy",
+                    "improved_numbers",
+                    "better_keywords"
+                ]
             }
         else:
             return {
                 "status": "healthy",
                 "service": "deepgram",
+                "model": "nova-3",
                 "note": "Client created successfully, skipped test transcription"
             }
             
@@ -257,6 +294,7 @@ def get_transcription_status() -> Dict[str, Any]:
         return {
             "status": "unhealthy",
             "service": "deepgram",
+            "model": "nova-3",
             "error": str(e)
         }
 
@@ -315,21 +353,107 @@ def validate_audio_format(content_type: str) -> bool:
         "audio/x-wav",
         "audio/webm",
         "audio/mp4",
-        "audio/aac"
+        "audio/aac",
+        "audio/flac",  # Nova-3 支持更多格式
+        "audio/m4a"
     ]
     
     return content_type in supported_formats
 
 def get_supported_languages() -> list:
     """
-    获取支持的语言列表
+    获取Nova-3支持的语言列表
     
     Returns:
         支持的语言代码列表
     """
     return [
-        "en",    # English
-        "es",    # Spanish  
-        "zh",    # Chinese
-        "multi"  # Multi-language detection
+        "en",     # English
+        "es",     # Spanish  
+        "zh",     # Chinese
+        "zh-CN",  # Chinese (Simplified)
+        "zh-TW",  # Chinese (Traditional)
+        "multi",  # Multi-language detection
+        "fr",     # French
+        "de",     # German
+        "it",     # Italian
+        "pt",     # Portuguese
+        "ja",     # Japanese
+        "ko",     # Korean
+        "ar",     # Arabic
+        "hi",     # Hindi
+        "ru",     # Russian
     ]
+
+def get_nova3_capabilities() -> Dict[str, Any]:
+    """
+    获取Nova-3模型的特有能力
+    
+    Returns:
+        Nova-3能力字典
+    """
+    return {
+        "model": "nova-3",
+        "enhanced_accuracy": True,
+        "improved_multilingual": True,
+        "better_number_recognition": True,
+        "advanced_punctuation": True,
+        "keyword_detection": True,
+        "reduced_hallucination": True,
+        "faster_processing": True,
+        "supported_languages": len(get_supported_languages()),
+        "audio_formats": len([fmt for fmt in [
+            "ogg", "mp3", "wav", "webm", "mp4", "aac", "flac", "m4a"
+        ]]),
+        "optimizations": [
+            "restaurant_vocabulary",
+            "food_terms",
+            "numbers_and_quantities",
+            "multilingual_detection"
+        ]
+    }
+
+def configure_for_restaurant_context() -> PrerecordedOptions:
+    """
+    为餐厅环境配置Nova-3的专门选项
+    
+    Returns:
+        餐厅优化的PrerecordedOptions
+    """
+    restaurant_keywords = [
+        # 西班牙语餐厅词汇
+        "pollo", "carne", "arroz", "papa", "tostones", "combo", "combinacion",
+        "salsa", "teriyaki", "agridulce", "plancha", "frito", "brocoli",
+        "camarones", "sopa", "huevo", "grande", "pequeño", "mediano",
+        
+        # 英语餐厅词汇
+        "chicken", "beef", "rice", "potato", "combination", "sauce", 
+        "fried", "grilled", "shrimp", "soup", "egg", "large", "small", "medium",
+        
+        # 中文餐厅词汇
+        "鸡肉", "牛肉", "米饭", "土豆", "套餐", "酱料", "炸", "烤", "虾", "汤",
+        
+        # 数量词
+        "uno", "dos", "tres", "cuatro", "cinco", "one", "two", "three", "four", "five"
+    ]
+    
+    return PrerecordedOptions(
+        model="nova-3",
+        punctuate=True,
+        smart_format=True,
+        language="multi",
+        detect_language=True,
+        filler_words=False,
+        profanity_filter=False,
+        diarize=False,
+        utterances=False,
+        alternatives=1,
+        tier="enhanced",
+        numerals=True,
+        measurements=True,
+        search=True,
+        keywords=restaurant_keywords,
+        language_detection=True,
+        endpointing=300,
+        vad_turnoff=500,
+    )
