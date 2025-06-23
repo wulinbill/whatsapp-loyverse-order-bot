@@ -10,9 +10,29 @@ import json
 import pathlib
 import logging
 from typing import List, Dict, Any, Optional
-from claude_client import ClaudeClient
-from order_processor import convert
-from tools import place_loyverse_order
+
+# 使用相对导入
+try:
+    from claude_client import ClaudeClient
+    from order_processor import convert
+    from tools import place_loyverse_order
+except ImportError as e:
+    # 如果相对导入失败，尝试绝对导入
+    import sys
+    logger = logging.getLogger(__name__)
+    logger.error(f"Import error in agent.py: {e}")
+    logger.error(f"Current directory: {os.getcwd()}")
+    logger.error(f"Python path: {sys.path}")
+    
+    # 尝试从src目录导入
+    try:
+        sys.path.insert(0, os.path.dirname(__file__))
+        from claude_client import ClaudeClient
+        from order_processor import convert
+        from tools import place_loyverse_order
+    except ImportError as e2:
+        logger.error(f"Secondary import error: {e2}")
+        raise
 
 logger = logging.getLogger(__name__)
 
