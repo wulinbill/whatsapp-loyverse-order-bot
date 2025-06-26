@@ -3,6 +3,7 @@ WhatsApp Loyverse Order Bot - 主应用文件
 """
 import asyncio
 import time
+import json
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
@@ -119,7 +120,9 @@ async def root():
             "health": "/health",
             "docs": "/docs",
             "webhook": "/webhook/whatsapp",
-            "admin": "/admin/stats"
+            "webhook_alt": "/whatsapp-webhook",
+            "admin": "/admin/stats",
+            "debug": "/debug/webhook"
         }
     }
 
@@ -166,7 +169,7 @@ async def health_check():
             else:
                 components["whatsapp"] = "not_configured"
         elif settings.channel_provider == "dialog360":
-            if settings.dialog360_token:
+            if hasattr(settings, 'dialog360_token') and settings.dialog360_token:
                 components["whatsapp"] = "configured"
             else:
                 components["whatsapp"] = "not_configured"
@@ -209,45 +212,109 @@ async def health_check():
 
 @app.post("/webhook/whatsapp")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
-    """WhatsApp webhook端点"""
+    """WhatsApp webhook端点 - 支持多种数据格式"""
     try:
-        # 获取请求体
-        body = await request.body()
+        # 获取 Content-Type
+        content_type = request.headers.get("content-type", "").lower()
+        logger.info(f"Webhook Content-Type: {content_type}")
         
-        # 解析JSON
-        try:
-            payload = await request.json()
-        except Exception as e:
-            logger.error(f"Failed to parse webhook JSON: {e}")
-            raise HTTPException(status_code=400, detail="Invalid JSON payload")
+        payload = {}
         
-        # 记录webhook接收
+        if "application/json" in content_type:
+            # JSON 格式（360Dialog 等）
+            try:
+                payload = await request.json()
+                logger.info("Parsed JSON payload")
+            except Exception as e:
+                logger.error(f"Failed to parse JSON: {e}")
+                raise HTTPException(status_code=400, detail="Invalid JSON payload")
+                
+        elif "application/x-www-form-urlencoded" in content_type:
+            # 表单格式（Twilio）
+            try:
+                form_data = await request.form()
+                payload = dict(form_data)
+                logger.info(f"Parsed form payload with {len(payload)} fields")
+                
+                # 记录主要字段（用于调试）
+                key_fields = ["From", "To", "Body", "MessageSid", "AccountSid", "MediaUrl0", "MediaContentType0"]
+                debug_info = {}
+                for field in key_fields:
+                    if field in payload:
+                        debug_info[field] = payload[field]
+                
+                if debug_info:
+                    logger.info(f"Form data fields: {debug_info}")
+                        
+            except Exception as e:
+                logger.error(f"Failed to parse form data: {e}")
+                raise HTTPException(status_code=400, detail="Invalid form data")
+        else:
+            # 尝试获取原始数据并自动检测格式
+            try:
+                body = await request.body()
+                logger.info(f"Raw body length: {len(body)}")
+                
+                if not body:
+                    logger.warning("Empty request body")
+                    return JSONResponse(content={"status": "accepted", "message": "empty_body"}, status_code=200)
+                
+                body_str = body.decode('utf-8')
+                logger.info(f"Raw body preview: {body_str[:200]}")
+                
+                # 尝试解析为 JSON
+                try:
+                    payload = json.loads(body_str)
+                    logger.info("Successfully parsed raw body as JSON")
+                except json.JSONDecodeError:
+                    # 如果不是 JSON，尝试解析为表单数据
+                    try:
+                        from urllib.parse import parse_qs
+                        parsed = parse_qs(body_str)
+                        # 将列表值转换为单个值
+                        payload = {k: v[0] if v else '' for k, v in parsed.items()}
+                        logger.info("Successfully parsed raw body as form data")
+                    except Exception as e:
+                        logger.error(f"Failed to parse raw body: {e}")
+                        raise HTTPException(status_code=400, detail="Unable to parse request body")
+                        
+            except HTTPException:
+                raise
+            except Exception as e:
+                logger.error(f"Error processing request body: {e}")
+                raise HTTPException(status_code=400, detail="Request processing error")
+        
+        # 验证 payload
+        if not isinstance(payload, dict):
+            logger.error(f"Payload is not a dictionary, got: {type(payload)}")
+            raise HTTPException(status_code=400, detail="Invalid payload format")
+        
+        if not payload:
+            logger.warning("Received empty payload")
+            return JSONResponse(content={"status": "accepted", "message": "empty_payload"}, status_code=200)
+        
+        # 记录 webhook 接收
         user_agent = request.headers.get('user-agent', 'unknown')
         logger.info(f"Received WhatsApp webhook from: {user_agent}")
         
-        # 基本验证
-        if not isinstance(payload, dict):
-            logger.error("Webhook payload is not a dictionary")
-            raise HTTPException(status_code=400, detail="Invalid payload format")
-        
-        # 验证webhook签名（根据提供商）
+        # 验证 webhook 签名（根据提供商）
         if settings.channel_provider == "twilio":
-            # TODO: 实现Twilio签名验证
-            pass
+            # TODO: 实现 Twilio 签名验证
+            logger.info("Twilio webhook received (signature validation skipped)")
         elif settings.channel_provider == "dialog360":
-            # TODO: 实现360Dialog签名验证
-            pass
+            # TODO: 实现 360Dialog 签名验证
+            logger.info("360Dialog webhook received")
         
-        # 在后台处理消息（避免阻塞webhook响应）
+        # 在后台处理消息（避免阻塞 webhook 响应）
         background_tasks.add_task(process_webhook_message, payload)
         
-        # 立即返回200响应
+        # 立即返回 200 响应
         return JSONResponse(content={"status": "accepted"}, status_code=200)
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Webhook processing error: {e}")
+        logger.error(f"Webhook processing error: {e}", exc_info=True)
         business_logger.log_error(
             user_id="webhook",
             stage="inbound",
@@ -256,7 +323,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
             exception=e
         )
         
-        # 仍然返回200以避免webhook重试
+        # 仍然返回 200 以避免 webhook 重试
         return JSONResponse(
             content={"status": "error", "error": "internal_error"}, 
             status_code=200
@@ -267,6 +334,30 @@ async def process_webhook_message(payload: Dict[str, Any]):
     try:
         from .whatsapp.router import whatsapp_router
         
+        # 记录收到的数据类型和关键信息
+        logger.info(f"Processing webhook payload with keys: {list(payload.keys())}")
+        
+        # 检测并标准化不同提供商的数据格式
+        if "From" in payload and "Body" in payload:
+            # Twilio 格式
+            logger.info("Detected Twilio webhook format")
+            payload["provider"] = "twilio"
+            
+            # 记录关键信息
+            from_number = payload.get("From", "")
+            message_body = payload.get("Body", "")
+            message_sid = payload.get("MessageSid", "")
+            
+            logger.info(f"Twilio message - From: {from_number}, Body: {message_body[:50]}..., SID: {message_sid}")
+            
+        elif "messages" in payload or "contacts" in payload:
+            # 360Dialog 格式
+            logger.info("Detected 360Dialog webhook format")  
+            payload["provider"] = "dialog360"
+        else:
+            logger.info("Unknown webhook format, proceeding with raw data")
+            payload["provider"] = "unknown"
+        
         # 处理消息
         result = await whatsapp_router.handle_incoming_message(payload)
         
@@ -274,13 +365,16 @@ async def process_webhook_message(payload: Dict[str, Any]):
         logger.info(f"Message processed: {status}")
         
     except Exception as e:
-        logger.error(f"Background message processing error: {e}")
+        logger.error(f"Background message processing error: {e}", exc_info=True)
         
         # 从payload中提取用户信息
         from_number = "unknown"
         if isinstance(payload, dict):
             # Twilio格式
             from_number = payload.get("From", payload.get("from_number", "unknown"))
+            # 去掉 whatsapp: 前缀（如果存在）
+            if from_number.startswith("whatsapp:"):
+                from_number = from_number[9:]
         
         business_logger.log_error(
             user_id=from_number,
@@ -317,6 +411,82 @@ async def whatsapp_webhook_verification(request: Request):
     except Exception as e:
         logger.error(f"Webhook verification error: {e}")
         raise HTTPException(status_code=500, detail="Verification error")
+
+# ==============================================================================
+# 兼容性别名路由
+# ==============================================================================
+
+@app.post("/whatsapp-webhook")
+async def twilio_whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
+    """Twilio WhatsApp webhook端点（别名路由）"""
+    logger.info("Received webhook via Twilio-style URL (/whatsapp-webhook)")
+    return await whatsapp_webhook(request, background_tasks)
+
+@app.get("/whatsapp-webhook")
+async def twilio_whatsapp_webhook_verification(request: Request):
+    """Twilio WhatsApp webhook验证端点（别名路由）"""
+    logger.info("Received webhook verification via Twilio-style URL")
+    return await whatsapp_webhook_verification(request)
+
+@app.post("/twilio/webhook")
+async def twilio_webhook_alt(request: Request, background_tasks: BackgroundTasks):
+    """Twilio webhook备用端点"""
+    logger.info("Received webhook via /twilio/webhook")
+    return await whatsapp_webhook(request, background_tasks)
+
+@app.get("/twilio/webhook")
+async def twilio_webhook_verification_alt(request: Request):
+    """Twilio webhook验证备用端点"""
+    logger.info("Received webhook verification via /twilio/webhook")
+    return await whatsapp_webhook_verification(request)
+
+# ==============================================================================
+# 调试端点
+# ==============================================================================
+
+@app.post("/debug/webhook")
+async def debug_webhook(request: Request):
+    """调试 webhook 数据格式"""
+    try:
+        # 获取所有信息
+        headers = dict(request.headers)
+        content_type = headers.get("content-type", "")
+        
+        # 获取原始数据
+        body = await request.body()
+        
+        debug_info = {
+            "headers": headers,
+            "content_type": content_type,
+            "body_length": len(body),
+            "body_raw": body.decode('utf-8') if body else "",
+            "query_params": dict(request.query_params)
+        }
+        
+        # 尝试解析数据
+        if "application/json" in content_type:
+            try:
+                # 重新创建 request 来解析 JSON（因为 body 已经被读取）
+                json_data = json.loads(body.decode('utf-8'))
+                debug_info["parsed_json"] = json_data
+            except:
+                debug_info["json_parse_error"] = "Failed to parse JSON"
+        
+        if "application/x-www-form-urlencoded" in content_type:
+            try:
+                from urllib.parse import parse_qs
+                parsed = parse_qs(body.decode('utf-8'))
+                debug_info["parsed_form"] = {k: v[0] if v else '' for k, v in parsed.items()}
+            except:
+                debug_info["form_parse_error"] = "Failed to parse form"
+        
+        logger.info(f"Debug webhook info: {debug_info}")
+        
+        return debug_info
+        
+    except Exception as e:
+        logger.error(f"Debug webhook error: {e}")
+        return {"error": str(e)}
 
 # ==============================================================================
 # 管理端点
