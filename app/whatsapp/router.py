@@ -271,6 +271,13 @@ class WhatsAppRouter:
     async def _process_recognized_order(self, user_id: str, order_lines: List[Dict[str, Any]], session: Any) -> Dict[str, Any]:
         """处理识别到的订单 - 按照文档的步骤3"""
         try:
+            logger.info(f"Processing recognized order for user {user_id}: {len(order_lines)} items")
+            
+            # 清除之前的选择状态 - 重要：防止使用旧的选择项
+            session.pending_choice = None
+            if not hasattr(session, 'matched_items'):
+                session.matched_items = []
+            
             # 解析别名并匹配菜品
             matched_items = await self._match_and_resolve_items(order_lines, user_id)
             
@@ -445,8 +452,18 @@ class WhatsAppRouter:
     
     async def _handle_choice_response(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理用户对选择的回应"""
+        # 检查是否有待处理的选择
+        if not hasattr(session, 'pending_choice') or not session.pending_choice:
+            logger.warning(f"No pending choice found for user {user_id}")
+            await self._send_response(user_id, "Lo siento, no hay opciones pendientes. ¿En qué puedo ayudarte?")
+            session.state = ConversationState.ORDERING
+            return {"status": "processed", "action": "no_pending_choice"}
+        
         pending_choice = session.pending_choice
         matches = pending_choice.get("matches", [])
+        
+        logger.info(f"Processing choice for user {user_id}: '{text_content}' from {len(matches)} options")
+        logger.info(f"Pending choice alias: '{pending_choice.get('original_alias')}'")
         
         # 尝试解析用户的选择
         choice_num = self._parse_choice_number(text_content)
