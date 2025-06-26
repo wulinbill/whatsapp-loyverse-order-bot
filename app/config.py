@@ -28,7 +28,7 @@ class Settings(BaseSettings):
         description="Deepgram API Key for speech-to-text"
     )
     deepgram_model: str = Field(
-        default="nova-2",
+        default="nova-3",
         description="Deepgram model to use"
     )
     
