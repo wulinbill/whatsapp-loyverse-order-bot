@@ -1,10 +1,10 @@
 import time
 import asyncio
 from typing import List, Dict, Any, Optional
-# 移除直接导入 openai
-import psycopg2
-import numpy as np
-from psycopg2.extras import RealDictCursor
+# 移除直接导入
+# import psycopg2
+# import numpy as np
+# from psycopg2.extras import RealDictCursor
 import json
 
 from ..config import get_settings
@@ -19,6 +19,8 @@ class VectorSearchClient:
     def __init__(self):
         # 条件导入和初始化 OpenAI 客户端
         self.openai_client = None
+        self.psycopg2 = None
+        self.numpy = None
         
         try:
             # 只有在配置了 API key 且启用了向量搜索时才导入 openai
@@ -34,6 +36,26 @@ class VectorSearchClient:
         except Exception as e:
             logger.error(f"Failed to initialize OpenAI client: {e}")
             self.openai_client = None
+        
+        # 条件导入 PostgreSQL 相关模块
+        try:
+            if settings.enable_vector_search:
+                import psycopg2
+                from psycopg2.extras import RealDictCursor
+                import numpy as np
+                
+                self.psycopg2 = psycopg2
+                self.RealDictCursor = RealDictCursor
+                self.numpy = np
+                logger.info("PostgreSQL libraries loaded for vector search")
+            else:
+                logger.info("PostgreSQL libraries not loaded - vector search disabled")
+        except ImportError:
+            logger.warning("PostgreSQL libraries (psycopg2) not installed. Vector search will be disabled.")
+            self.psycopg2 = None
+        except Exception as e:
+            logger.error(f"Failed to load PostgreSQL libraries: {e}")
+            self.psycopg2 = None
             
         self.embedding_model = getattr(settings, 'openai_embedding_model', 'text-embedding-3-small')
         self.threshold = getattr(settings, 'vector_search_threshold', 0.7)
@@ -41,20 +63,25 @@ class VectorSearchClient:
     
     async def _get_connection(self):
         """获取数据库连接"""
-        # 检查是否配置了PostgreSQL（如果有的话）
+        # 检查是否有 psycopg2
+        if not self.psycopg2:
+            logger.debug("psycopg2 not available, cannot connect to PostgreSQL")
+            return None
+            
+        # 检查是否配置了PostgreSQL
         postgres_config_attrs = ['postgres_password', 'postgres_host', 'postgres_port', 'postgres_db', 'postgres_user']
         
         # 如果没有这些配置，说明没有配置PostgreSQL
         if not all(hasattr(settings, attr) for attr in postgres_config_attrs):
-            logger.info("PostgreSQL not configured, vector search disabled")
+            logger.debug("PostgreSQL not configured in settings")
             return None
             
-        if not settings.postgres_password:
-            logger.warning("PostgreSQL not configured, vector search disabled")
+        if not getattr(settings, 'postgres_password', None):
+            logger.debug("PostgreSQL password not configured")
             return None
             
         try:
-            connection = psycopg2.connect(
+            connection = self.psycopg2.connect(
                 host=settings.postgres_host,
                 port=settings.postgres_port,
                 database=settings.postgres_db,
@@ -88,6 +115,10 @@ class VectorSearchClient:
                 
             if not self.openai_client:
                 logger.debug("OpenAI client not available, skipping vector search")
+                return []
+                
+            if not self.psycopg2:
+                logger.debug("PostgreSQL not available, skipping vector search")
                 return []
             
             # 1. 生成查询向量
@@ -150,7 +181,7 @@ class VectorSearchClient:
             return []
         
         try:
-            with connection.cursor(cursor_factory=RealDictCursor) as cursor:
+            with connection.cursor(cursor_factory=self.RealDictCursor) as cursor:
                 # 使用余弦相似度搜索
                 query = """
                 SELECT 
@@ -194,6 +225,10 @@ class VectorSearchClient:
         """构建菜单项的embeddings索引"""
         if not self.openai_client:
             logger.warning("OpenAI client not configured, cannot build embeddings index")
+            return
+        
+        if not self.psycopg2:
+            logger.warning("PostgreSQL not available, cannot build embeddings index")
             return
         
         if not settings.enable_vector_search:
