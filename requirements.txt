@@ -4,6 +4,9 @@ uvicorn[standard]>=0.27.0
 pydantic>=2.8.0
 pydantic-settings>=2.4.0
 
+# 表单数据解析支持
+python-multipart>=0.0.9
+
 # WhatsApp/SMS支持
 twilio>=9.0.0
 
