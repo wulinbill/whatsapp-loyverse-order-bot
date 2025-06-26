@@ -1,26 +1,6 @@
 services:
-  - type: web
-    name: whatsapp-loyverse-order-bot
-    env: python
-    plan: free
-    region: oregon
-    buildCommand: "pip install --upgrade pip && pip install -r requirements.txt"
-    startCommand: "cd /opt/render/project/src && python main.py"
-    envVars:
-      - key: PORT
-        value: "10000"
-      - key: PYTHONPATH
-        value: "/opt/render/project/src"
-      - key: PYTHONUNBUFFERED
-        value: "1"
-      - key: LOG_LEVEL
-        value: "INFO"
-      - key: FLASK_ENV
-        value: "production"
-    # 持久化存储用于token缓存
-    disk:
-      name: loyverse-tokens
-      mountPath: /mnt/data
-      sizeGB: 1
-    # 健康检查配置
-    healthCheckPath: /health
+- type: web
+  name: whatsapp-order-bot
+  env: docker
+  plan: starter
+  healthCheckPath: /health
