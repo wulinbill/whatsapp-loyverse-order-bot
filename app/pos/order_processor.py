@@ -49,18 +49,13 @@ class OrderProcessor:
             # 5. 确定准备时间
             preparation_time = self._calculate_preparation_time(processed_items)
             
-            # 6. 创建Loyverse收据（包含正确的税费结构）
+            # 6. 创建Loyverse收据（使用正确的税费处理）
             receipt_data = {
                 "customer_id": customer_id,
                 "line_items": line_items,
                 "payments": [{
-                    "type": "CASH",
-                    "amount": total_info["total_with_tax"]
-                }],
-                "taxes": [{
-                    "name": "IVU",
-                    "rate": self.tax_rate,
-                    "amount": total_info["tax_amount"]
+                    "payment_type_id": None,  # 如果有现金支付类型ID，在这里设置
+                    "money_amount": total_info["total_with_tax"]
                 }],
                 "receipt_note": f"Cliente: {customer_name}\nTeléfono: {customer_phone}\nTiempo estimado: {preparation_time} min"
             }
@@ -291,8 +286,7 @@ class OrderProcessor:
             line_item = {
                 "quantity": item.get("quantity", 1),
                 "variant_id": item.get("variant_id"),
-                "price": item.get("price", 0),
-                "item_name": item.get("item_name", "")  # 添加项目名称以便显示
+                "price": item.get("price", 0)
             }
             
             # 添加备注（组合修饰符信息）
