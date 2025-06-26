@@ -1,6 +1,7 @@
 import os
 from typing import Optional, List
-from pydantic import BaseSettings, Field
+from pydantic import BaseModel, Field
+from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     """应用配置设置"""
@@ -8,80 +9,82 @@ class Settings(BaseSettings):
     # 基本应用设置
     app_name: str = "Kong Food Bot"
     app_version: str = "1.0.0"
-    debug: bool = Field(default=False, env="DEBUG")
+    debug: bool = Field(default=False)
     
     # 餐厅信息
-    restaurant_name: str = Field(default="Kong Food", env="RESTAURANT_NAME")
+    restaurant_name: str = Field(default="Kong Food")
     
     # 数据库设置
-    database_url: str = Field(..., env="DATABASE_URL")
+    database_url: str = Field(...)
     
     # Loyverse POS API 设置 (OAuth 2.0)
-    loyverse_refresh_token: str = Field(..., env="LOYVERSE_REFRESH_TOKEN", description="Loyverse OAuth Refresh Token")
-    loyverse_client_id: str = Field(..., env="LOYVERSE_CLIENT_ID", description="Loyverse OAuth Client ID")
-    loyverse_client_secret: str = Field(..., env="LOYVERSE_CLIENT_SECRET", description="Loyverse OAuth Client Secret")
-    loyverse_store_id: str = Field(..., env="LOYVERSE_STORE_ID")
-    loyverse_base_url: str = Field(default="https://api.loyverse.com/v1.0", env="LOYVERSE_BASE_URL")
+    loyverse_refresh_token: str = Field(..., description="Loyverse OAuth Refresh Token")
+    loyverse_client_id: str = Field(..., description="Loyverse OAuth Client ID")
+    loyverse_client_secret: str = Field(..., description="Loyverse OAuth Client Secret")
+    loyverse_store_id: str = Field(...)
+    loyverse_base_url: str = Field(default="https://api.loyverse.com/v1.0")
     
     # 税费设置
-    tax_rate: float = Field(default=0.115, env="TAX_RATE")  # IVU 11.5%
+    tax_rate: float = Field(default=0.115)  # IVU 11.5%
     
     # Claude AI 设置
-    claude_api_key: str = Field(..., env="CLAUDE_API_KEY")
-    claude_model: str = Field(default="claude-3-sonnet-20240229", env="CLAUDE_MODEL")
+    claude_api_key: str = Field(...)
+    claude_model: str = Field(default="claude-3-sonnet-20240229")
     
     # Deepgram 语音识别设置
-    deepgram_api_key: str = Field(..., env="DEEPGRAM_API_KEY")
+    deepgram_api_key: str = Field(...)
     
     # WhatsApp 提供商设置
-    channel_provider: str = Field(default="twilio", env="CHANNEL_PROVIDER")  # "twilio" 或 "dialog360"
+    channel_provider: str = Field(default="twilio")  # "twilio" 或 "dialog360"
     
     # Twilio 设置
-    twilio_account_sid: Optional[str] = Field(default=None, env="TWILIO_ACCOUNT_SID")
-    twilio_auth_token: Optional[str] = Field(default=None, env="TWILIO_AUTH_TOKEN")
-    twilio_phone_number: Optional[str] = Field(default=None, env="TWILIO_PHONE_NUMBER")
+    twilio_account_sid: Optional[str] = Field(default=None)
+    twilio_auth_token: Optional[str] = Field(default=None)
+    twilio_phone_number: Optional[str] = Field(default=None)
     
     # 360Dialog 设置
-    dialog360_api_key: Optional[str] = Field(default=None, env="DIALOG360_API_KEY")
-    dialog360_base_url: Optional[str] = Field(default="https://waba.360dialog.io", env="DIALOG360_BASE_URL")
+    dialog360_api_key: Optional[str] = Field(default=None)
+    dialog360_base_url: Optional[str] = Field(default="https://waba.360dialog.io")
     
     # 模糊匹配设置
-    fuzzy_match_threshold: int = Field(default=80, env="FUZZY_MATCH_THRESHOLD")
+    fuzzy_match_threshold: int = Field(default=80)
     
     # 向量搜索设置
-    vector_search_enabled: bool = Field(default=True, env="VECTOR_SEARCH_ENABLED")
-    embedding_model: str = Field(default="text-embedding-3-small", env="EMBEDDING_MODEL")
+    vector_search_enabled: bool = Field(default=True)
+    embedding_model: str = Field(default="text-embedding-3-small")
     
     # API 限制设置
-    rate_limit_requests: int = Field(default=100, env="RATE_LIMIT_REQUESTS")
-    rate_limit_window: int = Field(default=3600, env="RATE_LIMIT_WINDOW")  # 1 hour
+    rate_limit_requests: int = Field(default=100)
+    rate_limit_window: int = Field(default=3600)  # 1 hour
     
     # 日志设置
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
-    log_file: Optional[str] = Field(default=None, env="LOG_FILE")
+    log_level: str = Field(default="INFO")
+    log_file: Optional[str] = Field(default=None)
     
     # Redis 设置（用于会话管理）
-    redis_url: Optional[str] = Field(default=None, env="REDIS_URL")
+    redis_url: Optional[str] = Field(default=None)
     
     # Webhook 设置
-    webhook_secret: Optional[str] = Field(default=None, env="WEBHOOK_SECRET")
-    webhook_verify_token: Optional[str] = Field(default=None, env="WEBHOOK_VERIFY_TOKEN")
+    webhook_secret: Optional[str] = Field(default=None)
+    webhook_verify_token: Optional[str] = Field(default=None)
     
     # 文件上传设置
-    max_file_size: int = Field(default=10485760, env="MAX_FILE_SIZE")  # 10MB
-    upload_directory: str = Field(default="uploads", env="UPLOAD_DIRECTORY")
+    max_file_size: int = Field(default=10485760)  # 10MB
+    upload_directory: str = Field(default="uploads")
     
     # 会话超时设置
-    session_timeout_minutes: int = Field(default=60, env="SESSION_TIMEOUT_MINUTES")
+    session_timeout_minutes: int = Field(default=60)
     
     # 安全设置
-    secret_key: str = Field(..., env="SECRET_KEY")
-    allowed_hosts: list = Field(default=["*"], env="ALLOWED_HOSTS")
+    secret_key: str = Field(...)
+    allowed_hosts: List[str] = Field(default=["*"])
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore"
+    }
 
 # 全局设置实例
 _settings = None
