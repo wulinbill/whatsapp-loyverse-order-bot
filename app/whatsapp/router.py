@@ -592,29 +592,6 @@ class WhatsAppRouter:
                 return num
         
         return None
-        """解析用户选择的数字"""
-        import re
-        
-        # 查找数字
-        numbers = re.findall(r'\d+', text)
-        if numbers:
-            return int(numbers[0])
-        
-        # 查找文字数字
-        word_to_num = {
-            "uno": 1, "una": 1, "primero": 1, "primera": 1,
-            "dos": 2, "segundo": 2, "segunda": 2,
-            "tres": 3, "tercero": 3, "tercera": 3,
-            "cuatro": 4, "cuarto": 4, "cuarta": 4,
-            "cinco": 5, "quinto": 5, "quinta": 5
-        }
-        
-        text_lower = text.lower()
-        for word, num in word_to_num.items():
-            if word in text_lower:
-                return num
-        
-        return None
     
     async def _handle_confirming_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理确认状态 - 询问是否还要其他"""
