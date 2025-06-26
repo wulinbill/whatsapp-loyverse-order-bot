@@ -1,7 +1,7 @@
 import time
 import asyncio
 from typing import List, Dict, Any, Optional
-import openai
+# 移除直接导入 openai
 import psycopg2
 import numpy as np
 from psycopg2.extras import RealDictCursor
@@ -17,13 +17,38 @@ class VectorSearchClient:
     """基于OpenAI embeddings和PGVector的向量搜索客户端"""
     
     def __init__(self):
-        self.openai_client = openai.AsyncOpenAI(api_key=settings.openai_api_key) if settings.openai_api_key else None
-        self.embedding_model = settings.openai_embedding_model
-        self.threshold = settings.vector_search_threshold
+        # 条件导入和初始化 OpenAI 客户端
+        self.openai_client = None
+        
+        try:
+            # 只有在配置了 API key 且启用了向量搜索时才导入 openai
+            if settings.openai_api_key and settings.enable_vector_search:
+                import openai
+                self.openai_client = openai.AsyncOpenAI(api_key=settings.openai_api_key)
+                logger.info("OpenAI client initialized for vector search")
+            else:
+                logger.info("OpenAI client not initialized - API key missing or vector search disabled")
+        except ImportError:
+            logger.warning("OpenAI library not installed. Vector search will be disabled.")
+            self.openai_client = None
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenAI client: {e}")
+            self.openai_client = None
+            
+        self.embedding_model = getattr(settings, 'openai_embedding_model', 'text-embedding-3-small')
+        self.threshold = getattr(settings, 'vector_search_threshold', 0.7)
         self._connection_pool = None
     
     async def _get_connection(self):
         """获取数据库连接"""
+        # 检查是否配置了PostgreSQL（如果有的话）
+        postgres_config_attrs = ['postgres_password', 'postgres_host', 'postgres_port', 'postgres_db', 'postgres_user']
+        
+        # 如果没有这些配置，说明没有配置PostgreSQL
+        if not all(hasattr(settings, attr) for attr in postgres_config_attrs):
+            logger.info("PostgreSQL not configured, vector search disabled")
+            return None
+            
         if not settings.postgres_password:
             logger.warning("PostgreSQL not configured, vector search disabled")
             return None
@@ -56,8 +81,13 @@ class VectorSearchClient:
         start_time = time.time()
         
         try:
+            # 检查是否启用向量搜索
+            if not settings.enable_vector_search:
+                logger.debug("Vector search is disabled in settings")
+                return []
+                
             if not self.openai_client:
-                logger.warning("OpenAI client not configured, skipping vector search")
+                logger.debug("OpenAI client not available, skipping vector search")
                 return []
             
             # 1. 生成查询向量
@@ -94,6 +124,9 @@ class VectorSearchClient:
     
     async def _get_embedding(self, text: str) -> Optional[List[float]]:
         """获取文本的embedding向量"""
+        if not self.openai_client:
+            return None
+            
         try:
             response = await self.openai_client.embeddings.create(
                 model=self.embedding_model,
@@ -163,6 +196,10 @@ class VectorSearchClient:
             logger.warning("OpenAI client not configured, cannot build embeddings index")
             return
         
+        if not settings.enable_vector_search:
+            logger.info("Vector search disabled, skipping embeddings index build")
+            return
+        
         logger.info("Building embeddings index...")
         
         try:
@@ -183,21 +220,30 @@ class VectorSearchClient:
     
     async def _load_menu_items(self) -> List[Dict[str, Any]]:
         """加载菜单项数据"""
-        import os
-        
-        current_dir = os.path.dirname(os.path.abspath(__file__))
-        menu_file = os.path.join(current_dir, "..", "knowledge_base", "menu_kb.json")
-        
-        with open(menu_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-        
-        menu_items = []
-        for category_name, category_data in data.get("menu_categories", {}).items():
-            if isinstance(category_data, dict) and "items" in category_data:
-                for item in category_data["items"]:
-                    menu_items.append(item)
-        
-        return menu_items
+        try:
+            import os
+            
+            current_dir = os.path.dirname(os.path.abspath(__file__))
+            menu_file = os.path.join(current_dir, "..", "knowledge_base", "menu_kb.json")
+            
+            if not os.path.exists(menu_file):
+                logger.warning(f"Menu file not found: {menu_file}")
+                return []
+            
+            with open(menu_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            menu_items = []
+            for category_name, category_data in data.get("menu_categories", {}).items():
+                if isinstance(category_data, dict) and "items" in category_data:
+                    for item in category_data["items"]:
+                        menu_items.append(item)
+            
+            return menu_items
+            
+        except Exception as e:
+            logger.error(f"Failed to load menu items: {e}")
+            return []
     
     async def _create_embeddings_table(self):
         """创建embeddings表"""
