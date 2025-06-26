@@ -85,6 +85,8 @@ class LogStages:
     OUTBOUND = "outbound"
     AUTH = "auth"
     ERROR = "error"
+    CUSTOMER = "customer"
+    TRANSACTION = "transaction"
 
 class BusinessLogger:
     """业务日志记录器，包含结构化日志方法"""
@@ -202,6 +204,122 @@ class BusinessLogger:
                 }
             },
             exc_info=exception
+        )
+    
+    # ========================================================================
+    # 新增的缺失方法
+    # ========================================================================
+    
+    def log_customer_activity(self, user_id: str, customer_id: str, activity_type: str, details: Optional[Dict[str, Any]] = None):
+        """记录客户活动"""
+        self.logger.info(
+            f"Customer {activity_type}: {customer_id} for user {user_id}",
+            extra={
+                "stage": LogStages.CUSTOMER,
+                "user_id": user_id,
+                "data": {
+                    "customer_id": customer_id,
+                    "activity_type": activity_type,
+                    "details": details or {}
+                }
+            }
+        )
+    
+    def log_pos_transaction(self, user_id: str, receipt_id: str, total_amount: float, transaction_type: str = "sale", metadata: Optional[Dict[str, Any]] = None):
+        """记录POS交易"""
+        self.logger.info(
+            f"POS {transaction_type}: Receipt {receipt_id} for ${total_amount:.2f} (User: {user_id})",
+            extra={
+                "stage": LogStages.TRANSACTION,
+                "user_id": user_id,
+                "order_id": receipt_id,
+                "data": {
+                    "receipt_id": receipt_id,
+                    "total_amount": total_amount,
+                    "transaction_type": transaction_type,
+                    "metadata": metadata or {}
+                }
+            }
+        )
+    
+    # ========================================================================
+    # 其他有用的日志方法
+    # ========================================================================
+    
+    def log_ai_interaction(self, user_id: str, interaction_type: str, input_text: str, output_text: str, metadata: Optional[Dict[str, Any]] = None):
+        """记录AI交互"""
+        input_preview = input_text[:50] + "..." if len(input_text) > 50 else input_text
+        output_preview = output_text[:50] + "..." if len(output_text) > 50 else output_text
+        
+        self.logger.info(
+            f"AI {interaction_type} for user {user_id}",
+            extra={
+                "stage": LogStages.LLM,
+                "user_id": user_id,
+                "data": {
+                    "interaction_type": interaction_type,
+                    "input_preview": input_preview,
+                    "output_preview": output_preview,
+                    "metadata": metadata or {}
+                }
+            }
+        )
+    
+    def log_speech_processing(self, user_id: str, duration_seconds: float, success: bool, transcript: Optional[str] = None, error: Optional[str] = None):
+        """记录语音处理"""
+        status = "success" if success else "failed"
+        
+        data = {
+            "duration_seconds": duration_seconds,
+            "success": success
+        }
+        
+        if transcript:
+            preview = transcript[:50] + "..." if len(transcript) > 50 else transcript
+            data["transcript_preview"] = preview
+        
+        if error:
+            data["error"] = error
+        
+        self.logger.info(
+            f"Speech processing {status} for user {user_id} ({duration_seconds:.1f}s)",
+            extra={
+                "stage": "speech",
+                "user_id": user_id,
+                "duration_ms": int(duration_seconds * 1000),
+                "data": data
+            }
+        )
+    
+    def log_session_event(self, user_id: str, event_type: str, details: Optional[Dict[str, Any]] = None):
+        """记录会话事件"""
+        self.logger.info(
+            f"Session {event_type} for user {user_id}",
+            extra={
+                "stage": "session",
+                "user_id": user_id,
+                "data": {
+                    "event_type": event_type,
+                    "details": details or {}
+                }
+            }
+        )
+    
+    def log_webhook_event(self, provider: str, event_type: str, success: bool, metadata: Optional[Dict[str, Any]] = None):
+        """记录webhook事件"""
+        status = "processed" if success else "failed"
+        
+        self.logger.info(
+            f"Webhook {event_type} from {provider} {status}",
+            extra={
+                "stage": "webhook",
+                "data": {
+                    "provider": provider,
+                    "event_type": event_type,
+                    "success": success,
+                    "metadata": metadata or {}
+                }
+            }
         )
 
 # 全局业务日志记录器实例
