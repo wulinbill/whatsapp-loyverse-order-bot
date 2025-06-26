@@ -99,8 +99,8 @@ class Settings(BaseSettings):
     # OpenAI向量搜索配置（可选）
     # ========================================================================
     openai_api_key: str = Field(
-        default="",
-        description="OpenAI API Key for embeddings"
+    default="",
+    description="OpenAI API Key for embeddings (optional - not required)"
     )
     openai_embedding_model: str = Field(
         default="text-embedding-3-small",
@@ -191,7 +191,7 @@ class Settings(BaseSettings):
         description="Enable voice message processing"
     )
     enable_vector_search: bool = Field(
-        default=True,
+        default=False,
         description="Enable vector-based menu search"
     )
     enable_analytics: bool = Field(
