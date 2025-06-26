@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "items": [
+    {
+      "sku": "SKU_SAMPLE",
+      "name": "Pollo Frito",
+      "aliases": [
+        "pollo frito",
+        "fried chicken"
+      ]
+    }
+  ]
+}
