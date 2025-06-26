@@ -18,6 +18,7 @@ class LoyverseClient:
         self.base_url = "https://api.loyverse.com/v1.0"
         self.access_token = None
         self.token_expires_at = None
+        self.cached_payment_types = None  # 缓存支付类型
     
     async def _get_access_token(self) -> str:
         """获取或刷新访问令牌"""
@@ -74,6 +75,60 @@ class LoyverseClient:
             "Content-Type": "application/json"
         }
     
+    async def _get_cash_payment_type_id(self, user_id: str) -> Optional[str]:
+        """
+        获取现金支付类型的ID
+        """
+        try:
+            # 如果已缓存，直接返回
+            if self.cached_payment_types:
+                for payment_type in self.cached_payment_types:
+                    payment_name = payment_type.get("name", "").lower()
+                    payment_type_value = payment_type.get("type", "").lower()
+                    if "cash" in payment_name or "efectivo" in payment_name or payment_type_value == "cash":
+                        return payment_type.get("id")
+            
+            headers = await self._get_headers()
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/payment_types",
+                    headers=headers
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        payment_types = data.get("payment_types", [])
+                        self.cached_payment_types = payment_types
+                        
+                        # 查找现金支付类型
+                        for payment_type in payment_types:
+                            payment_name = payment_type.get("name", "").lower()
+                            payment_type_value = payment_type.get("type", "").lower()
+                            
+                            # 匹配现金相关的名称或类型
+                            if any(keyword in payment_name for keyword in ["cash", "efectivo", "dinero"]) or payment_type_value == "cash":
+                                logger.info(f"Found cash payment type: {payment_type.get('name')} (ID: {payment_type.get('id')})")
+                                return payment_type.get("id")
+                        
+                        # 如果没找到现金，使用第一个支付类型
+                        if payment_types:
+                            default_payment = payment_types[0]
+                            logger.warning(f"No cash payment type found, using first available: {default_payment.get('name')} (ID: {default_payment.get('id')})")
+                            return default_payment.get("id")
+                        
+                        logger.error("No payment types configured in Loyverse")
+                        return None
+                    
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to get payment types: {response.status} - {error_text}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Exception getting payment type ID: {e}")
+            return None
+    
     async def create_receipt_with_taxes(self, receipt_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """
         创建包含正确税费的收据
@@ -89,13 +144,43 @@ class LoyverseClient:
             # 获取税费ID（需要预先配置在Loyverse中）
             tax_id = await self._get_ivu_tax_id(user_id)
             
+            # 获取现金支付类型ID
+            cash_payment_type_id = await self._get_cash_payment_type_id(user_id)
+            if not cash_payment_type_id:
+                return {
+                    "success": False,
+                    "error": "NO_PAYMENT_TYPE",
+                    "message": "No se pudo obtener el tipo de pago. Verifique la configuración de Loyverse."
+                }
+            
+            # 处理支付信息
+            payments = receipt_data.get("payments", [])
+            if payments:
+                # 确保每个支付都有payment_type_id
+                for payment in payments:
+                    if not payment.get("payment_type_id"):
+                        payment["payment_type_id"] = cash_payment_type_id
+            else:
+                # 如果没有提供支付信息，创建默认现金支付
+                total_amount = sum(
+                    item.get("price", 0) * item.get("quantity", 1) 
+                    for item in receipt_data.get("line_items", [])
+                )
+                # 计算含税总额
+                total_with_tax = total_amount * (1 + settings.tax_rate)
+                
+                payments = [{
+                    "payment_type_id": cash_payment_type_id,
+                    "money_amount": round(total_with_tax, 2)
+                }]
+            
             # 构建完整的收据请求
             receipt_request = {
                 "source": "API",
                 "receipt_date": datetime.utcnow().isoformat() + "Z",
                 "store_id": settings.loyverse_store_id,
                 "line_items": self._prepare_line_items_with_taxes(receipt_data.get("line_items", []), tax_id),
-                "payments": receipt_data.get("payments", []),
+                "payments": payments,
                 "note": receipt_data.get("receipt_note", "")
             }
             
@@ -110,6 +195,11 @@ class LoyverseClient:
             if not receipt_request["payments"]:
                 raise ValueError("No payments provided")
             
+            # 验证每个支付都有payment_type_id
+            for payment in receipt_request["payments"]:
+                if not payment.get("payment_type_id"):
+                    raise ValueError("Missing payment_type_id in payment")
+            
             logger.info(f"Creating receipt with taxes for user {user_id}")
             logger.debug(f"Receipt request: {json.dumps(receipt_request, indent=2)}")
             
@@ -122,7 +212,7 @@ class LoyverseClient:
                     json=receipt_request
                 ) as response:
                     
-                    if response.status == 201:
+                    if response.status == 200:  # Loyverse创建收据可能返回200而不是201
                         receipt = await response.json()
                         
                         business_logger.log_pos_transaction(
@@ -244,27 +334,26 @@ class LoyverseClient:
             
             async with aiohttp.ClientSession() as session:
                 # 使用电话号码搜索客户
-                params = {
-                    "phone_number": clean_phone,
-                    "limit": 1
-                }
-                
+                # 注意：Loyverse API 可能不支持直接按phone_number搜索，需要获取所有客户然后过滤
                 async with session.get(
                     f"{self.base_url}/customers",
                     headers=headers,
-                    params=params
+                    params={"limit": 250}  # 获取更多客户进行搜索
                 ) as response:
                     
                     if response.status == 200:
                         data = await response.json()
                         customers = data.get("customers", [])
                         
-                        if customers:
-                            logger.info(f"Found existing customer for phone {clean_phone}")
-                            return customers[0]
-                        else:
-                            logger.info(f"No existing customer found for phone {clean_phone}")
-                            return None
+                        # 在客户列表中查找匹配的电话号码
+                        for customer in customers:
+                            customer_phone = customer.get("phone_number", "")
+                            if customer_phone == clean_phone:
+                                logger.info(f"Found existing customer for phone {clean_phone}")
+                                return customer
+                        
+                        logger.info(f"No existing customer found for phone {clean_phone}")
+                        return None
                     
                     else:
                         error_text = await response.text()
@@ -295,7 +384,7 @@ class LoyverseClient:
                     json=customer_data
                 ) as response:
                     
-                    if response.status == 201:
+                    if response.status == 200:  # Loyverse可能返回200而不是201
                         customer = await response.json()
                         customer_id = customer.get("id")
                         
@@ -325,10 +414,10 @@ class LoyverseClient:
             headers = await self._get_headers()
             
             async with aiohttp.ClientSession() as session:
-                async with session.put(
-                    f"{self.base_url}/customers/{customer_id}",
+                async with session.post(  # Loyverse可能使用POST而不是PUT来更新
+                    f"{self.base_url}/customers",
                     headers=headers,
-                    json=update_data
+                    json={**update_data, "id": customer_id}  # 包含ID来更新现有客户
                 ) as response:
                     
                     if response.status == 200:
