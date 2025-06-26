@@ -8,7 +8,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 class Settings(BaseSettings):
-    """应用配置设置"""
+    """应用配置设置 - 纯内存版本（无数据库）"""
     
     # ========================================================================
     # Claude AI配置
@@ -96,7 +96,7 @@ class Settings(BaseSettings):
     )
     
     # ========================================================================
-    # OpenAI向量搜索配置
+    # OpenAI向量搜索配置（可选）
     # ========================================================================
     openai_api_key: str = Field(
         default="",
@@ -106,39 +106,6 @@ class Settings(BaseSettings):
         default="text-embedding-3-small",
         description="OpenAI embedding model"
     )
-    
-    # ========================================================================
-    # PostgreSQL向量数据库配置
-    # ========================================================================
-    postgres_host: str = Field(
-        default="localhost",
-        description="PostgreSQL host"
-    )
-    postgres_port: int = Field(
-        default=5432,
-        description="PostgreSQL port"
-    )
-    postgres_db: str = Field(
-        default="whatsapp_bot",
-        description="PostgreSQL database name"
-    )
-    postgres_user: str = Field(
-        default="postgres",
-        description="PostgreSQL username"
-    )
-    postgres_password: str = Field(
-        default="",
-        description="PostgreSQL password"
-    )
-    
-    # 数据库URL（自动构建）
-    @property
-    def database_url(self) -> str:
-        """构建PostgreSQL连接URL"""
-        if self.postgres_password:
-            return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
-        else:
-            return f"postgresql://{self.postgres_user}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
     
     # ========================================================================
     # 应用配置
@@ -237,6 +204,22 @@ class Settings(BaseSettings):
     )
     
     # ========================================================================
+    # 内存存储配置（替代数据库）
+    # ========================================================================
+    session_cleanup_interval: int = Field(
+        default=300,  # 5 minutes
+        description="Session cleanup interval in seconds"
+    )
+    max_sessions_in_memory: int = Field(
+        default=1000,
+        description="Maximum number of sessions to keep in memory"
+    )
+    session_timeout_seconds: int = Field(
+        default=3600,  # 1 hour
+        description="Session timeout in seconds"
+    )
+    
+    # ========================================================================
     # 缓存和性能配置
     # ========================================================================
     cache_ttl_seconds: int = Field(
@@ -312,6 +295,22 @@ class Settings(BaseSettings):
                 "https://your-frontend-domain.com",
                 "https://your-admin-panel.com"
             ]
+    
+    # ========================================================================
+    # 内存存储辅助方法
+    # ========================================================================
+    
+    def should_use_memory_storage(self) -> bool:
+        """确认使用内存存储"""
+        return True  # 始终使用内存存储
+    
+    def get_session_config(self) -> dict:
+        """获取会话配置"""
+        return {
+            "cleanup_interval": self.session_cleanup_interval,
+            "max_sessions": self.max_sessions_in_memory,
+            "timeout": self.session_timeout_seconds
+        }
 
 # ========================================================================
 # 全局设置实例
