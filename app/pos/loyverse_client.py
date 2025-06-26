@@ -1,346 +1,320 @@
-import time
 import asyncio
+import aiohttp
+import json
 from typing import Dict, List, Any, Optional
-import httpx
 from datetime import datetime
-import uuid
 
 from ..config import get_settings
 from ..logger import get_logger, business_logger
-from .loyverse_auth import loyverse_auth
 
 settings = get_settings()
 logger = get_logger(__name__)
 
 class LoyverseClient:
-    """Loyverse POS系统客户端"""
+    """Loyverse POS API客户端 - 支持正确的税费处理"""
     
     def __init__(self):
-        self.base_url = settings.loyverse_base_url
-        self.store_id = settings.loyverse_store_id
-        self.pos_device_id = settings.loyverse_pos_device_id
-        self.default_payment_type_id = settings.loyverse_default_payment_type_id
-        self.tax_rate = settings.tax_rate
+        self.api_token = settings.loyverse_api_token
+        self.base_url = "https://api.loyverse.com/v1.0"
+        self.headers = {
+            "Authorization": f"Bearer {self.api_token}",
+            "Content-Type": "application/json"
+        }
     
-    async def create_receipt(self, customer_id: str, line_items: List[Dict[str, Any]], user_id: str) -> Dict[str, Any]:
+    async def create_receipt_with_taxes(self, receipt_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
         """
-        创建收据/订单
+        创建包含正确税费的收据
         
         Args:
-            customer_id: 客户ID
-            line_items: 订单行项目
-            user_id: 用户ID（用于日志）
+            receipt_data: 收据数据，包含taxes字段
+            user_id: 用户ID
             
         Returns:
             创建的收据信息
         """
-        start_time = time.time()
-        
         try:
-            headers = await loyverse_auth.get_auth_headers()
+            # 构建完整的收据请求
+            receipt_request = {
+                "source": "API",
+                "receipt_number": self._generate_receipt_number(),
+                "receipt_date": datetime.utcnow().isoformat() + "Z",
+                "store_id": settings.loyverse_store_id,
+                "line_items": receipt_data.get("line_items", []),
+                "payments": receipt_data.get("payments", []),
+                "taxes": receipt_data.get("taxes", []),  # 关键：包含税费信息
+                "receipt_note": receipt_data.get("receipt_note", "")
+            }
             
-            # 构建收据数据
-            receipt_data = self._build_receipt_data(customer_id, line_items)
+            # 如果有客户ID，添加客户信息
+            if receipt_data.get("customer_id"):
+                receipt_request["customer_id"] = receipt_data["customer_id"]
             
-            logger.info(f"Creating receipt for customer {customer_id} with {len(line_items)} items")
+            # 验证必要字段
+            if not receipt_request["line_items"]:
+                raise ValueError("No line items provided")
             
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
+            if not receipt_request["payments"]:
+                raise ValueError("No payments provided")
+            
+            logger.info(f"Creating receipt with taxes for user {user_id}")
+            logger.debug(f"Receipt request: {json.dumps(receipt_request, indent=2)}")
+            
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
                     f"{self.base_url}/receipts",
-                    headers=headers,
-                    json=receipt_data,
-                    timeout=30.0
-                )
-            
-            duration_ms = int((time.time() - start_time) * 1000)
-            
-            if response.status_code == 200:
-                receipt = response.json()
-                
-                # 记录成功的订单日志
-                business_logger.log_pos_order(
-                    user_id=user_id,
-                    order_id=receipt.get("receipt_number", ""),
-                    total_amount=receipt.get("total_money", 0),
-                    items_count=len(line_items),
-                    duration_ms=duration_ms
-                )
-                
-                logger.info(f"Receipt created successfully: {receipt.get('receipt_number')}")
-                return receipt
-            else:
-                error_msg = f"Failed to create receipt: {response.status_code} - {response.text}"
-                business_logger.log_error(
-                    user_id=user_id,
-                    stage="pos",
-                    error_code="RECEIPT_CREATION_FAILED",
-                    error_msg=error_msg
-                )
-                raise Exception(error_msg)
-                
+                    headers=self.headers,
+                    json=receipt_request
+                ) as response:
+                    
+                    if response.status == 201:
+                        receipt = await response.json()
+                        
+                        business_logger.log_pos_transaction(
+                            user_id=user_id,
+                            receipt_id=receipt.get("id"),
+                            total_amount=sum(p.get("amount", 0) for p in receipt_request["payments"]),
+                            transaction_type="sale"
+                        )
+                        
+                        logger.info(f"Successfully created receipt {receipt.get('receipt_number')} for user {user_id}")
+                        return receipt
+                    
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to create receipt: {response.status} - {error_text}")
+                        
+                        business_logger.log_error(
+                            user_id=user_id,
+                            stage="pos",
+                            error_code="RECEIPT_CREATION_FAILED",
+                            error_msg=f"HTTP {response.status}: {error_text}"
+                        )
+                        
+                        return {
+                            "success": False,
+                            "error": "RECEIPT_CREATION_FAILED",
+                            "message": f"Error creating receipt: {response.status}"
+                        }
+                        
         except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
+            logger.error(f"Exception creating receipt: {e}")
             business_logger.log_error(
                 user_id=user_id,
                 stage="pos",
-                error_code="RECEIPT_CREATION_ERROR",
+                error_code="RECEIPT_CREATION_EXCEPTION",
                 error_msg=str(e),
                 exception=e
             )
-            raise
-    
-    def _build_receipt_data(self, customer_id: str, line_items: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """构建收据数据"""
-        receipt_data = {
-            "store_id": self.store_id,
-            "customer_id": customer_id if customer_id else None,
-            "source": "whatsapp_bot",
-            "receipt_date": datetime.utcnow().isoformat() + "Z",
-            "line_items": [],
-            "payments": []
-        }
-        
-        # 添加订单行项目
-        for item in line_items:
-            line_item = {
-                "quantity": item.get("quantity", 1),
-                "variant_id": item.get("variant_id"),
-                "price": item.get("price", 0)
+            
+            return {
+                "success": False,
+                "error": "RECEIPT_CREATION_EXCEPTION",
+                "message": str(e)
             }
+    
+    async def find_customer_by_phone(self, phone: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """根据电话号码查找客户"""
+        try:
+            # 清理电话号码格式
+            clean_phone = self._clean_phone_number(phone)
             
-            # 添加成本信息（如果有）
-            if "cost" in item:
-                line_item["cost"] = item["cost"]
-            
-            # 添加备注（如果有）
-            if "note" in item:
-                line_item["line_note"] = item["note"]
-            
-            # 添加税务信息（如果有）
-            if "tax_ids" in item:
-                line_item["line_taxes"] = [{"id": tax_id} for tax_id in item["tax_ids"]]
-            
-            # 添加折扣信息（如果有）
-            if "discount_ids" in item:
-                line_item["line_discounts"] = [{"id": discount_id} for discount_id in item["discount_ids"]]
-            
-            # 添加修饰符信息（如果有）
-            if "modifier_option_ids" in item:
-                line_item["line_modifiers"] = [{"modifier_option_id": mod_id} for mod_id in item["modifier_option_ids"]]
-            
-            receipt_data["line_items"].append(line_item)
-        
-        # 计算总金额
-        subtotal = sum(item.get("price", 0) * item.get("quantity", 1) for item in line_items)
-        total_with_tax = subtotal * (1 + self.tax_rate)
-        
-        # 添加默认支付方式（如果配置了）
-        if self.default_payment_type_id:
-            receipt_data["payments"].append({
-                "payment_type_id": self.default_payment_type_id,
-                "money_amount": total_with_tax,
-                "paid_at": datetime.utcnow().isoformat() + "Z"
-            })
-        
-        return receipt_data
+            async with aiohttp.ClientSession() as session:
+                # 使用电话号码搜索客户
+                params = {
+                    "phone_number": clean_phone,
+                    "limit": 1
+                }
+                
+                async with session.get(
+                    f"{self.base_url}/customers",
+                    headers=self.headers,
+                    params=params
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        customers = data.get("customers", [])
+                        
+                        if customers:
+                            logger.info(f"Found existing customer for phone {clean_phone}")
+                            return customers[0]
+                        else:
+                            logger.info(f"No existing customer found for phone {clean_phone}")
+                            return None
+                    
+                    else:
+                        error_text = await response.text()
+                        logger.warning(f"Error searching customer: {response.status} - {error_text}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Exception finding customer by phone: {e}")
+            return None
     
     async def create_customer(self, name: str, phone: str, user_id: str) -> Optional[str]:
-        """
-        创建客户记录
-        
-        Args:
-            name: 客户姓名
-            phone: 客户电话
-            user_id: 用户ID（用于日志）
-            
-        Returns:
-            客户ID，如果创建失败返回None
-        """
-        start_time = time.time()
-        
+        """创建新客户"""
         try:
-            headers = await loyverse_auth.get_auth_headers()
+            clean_phone = self._clean_phone_number(phone)
             
             customer_data = {
                 "name": name,
-                "phone_number": phone,
-                "created_at": datetime.utcnow().isoformat() + "Z"
+                "phone_number": clean_phone,
+                "email": None  # 可选
             }
             
-            logger.info(f"Creating customer: {name} ({phone})")
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
                     f"{self.base_url}/customers",
-                    headers=headers,
-                    json=customer_data,
-                    timeout=30.0
-                )
-            
-            duration_ms = int((time.time() - start_time) * 1000)
-            
-            if response.status_code == 200:
-                customer = response.json()
-                customer_id = customer.get("id")
-                
-                logger.info(f"Customer created successfully: {customer_id}")
-                return customer_id
-            else:
-                error_msg = f"Failed to create customer: {response.status_code} - {response.text}"
-                business_logger.log_error(
-                    user_id=user_id,
-                    stage="pos",
-                    error_code="CUSTOMER_CREATION_FAILED",
-                    error_msg=error_msg
-                )
-                logger.error(error_msg)
-                return None
-                
+                    headers=self.headers,
+                    json=customer_data
+                ) as response:
+                    
+                    if response.status == 201:
+                        customer = await response.json()
+                        customer_id = customer.get("id")
+                        
+                        logger.info(f"Created new customer {customer_id} for {name} ({clean_phone})")
+                        
+                        business_logger.log_customer_activity(
+                            user_id=user_id,
+                            customer_id=customer_id,
+                            activity_type="created",
+                            details={"name": name, "phone": clean_phone}
+                        )
+                        
+                        return customer_id
+                    
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to create customer: {response.status} - {error_text}")
+                        return None
+                        
         except Exception as e:
-            duration_ms = int((time.time() - start_time) * 1000)
-            business_logger.log_error(
-                user_id=user_id,
-                stage="pos",
-                error_code="CUSTOMER_CREATION_ERROR",
-                error_msg=str(e),
-                exception=e
-            )
             logger.error(f"Exception creating customer: {e}")
             return None
     
-    async def find_customer_by_phone(self, phone: str, user_id: str) -> Optional[Dict[str, Any]]:
-        """
-        根据电话号码查找客户
-        
-        Args:
-            phone: 客户电话
-            user_id: 用户ID（用于日志）
-            
-        Returns:
-            客户信息，如果未找到返回None
-        """
+    async def update_customer(self, customer_id: str, update_data: Dict[str, Any], user_id: str) -> bool:
+        """更新客户信息"""
         try:
-            headers = await loyverse_auth.get_auth_headers()
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.base_url}/customers",
-                    headers=headers,
-                    params={"phone_number": phone},
-                    timeout=30.0
-                )
-            
-            if response.status_code == 200:
-                data = response.json()
-                customers = data.get("customers", [])
-                
-                if customers:
-                    logger.info(f"Found existing customer for phone {phone}")
-                    return customers[0]  # 返回第一个匹配的客户
-                else:
-                    logger.info(f"No existing customer found for phone {phone}")
-                    return None
-            else:
-                logger.error(f"Failed to search customers: {response.status_code} - {response.text}")
-                return None
-                
+            async with aiohttp.ClientSession() as session:
+                async with session.put(
+                    f"{self.base_url}/customers/{customer_id}",
+                    headers=self.headers,
+                    json=update_data
+                ) as response:
+                    
+                    if response.status == 200:
+                        logger.info(f"Updated customer {customer_id}")
+                        
+                        business_logger.log_customer_activity(
+                            user_id=user_id,
+                            customer_id=customer_id,
+                            activity_type="updated",
+                            details=update_data
+                        )
+                        
+                        return True
+                    
+                    else:
+                        error_text = await response.text()
+                        logger.warning(f"Failed to update customer: {response.status} - {error_text}")
+                        return False
+                        
         except Exception as e:
-            business_logger.log_error(
-                user_id=user_id,
-                stage="pos",
-                error_code="CUSTOMER_SEARCH_ERROR",
-                error_msg=str(e),
-                exception=e
-            )
-            logger.error(f"Exception searching customer: {e}")
-            return None
-    
-    async def get_receipt(self, receipt_number: str, user_id: str) -> Optional[Dict[str, Any]]:
-        """
-        获取收据信息
-        
-        Args:
-            receipt_number: 收据号码
-            user_id: 用户ID（用于日志）
-            
-        Returns:
-            收据信息，如果未找到返回None
-        """
-        try:
-            headers = await loyverse_auth.get_auth_headers()
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.get(
-                    f"{self.base_url}/receipts/{receipt_number}",
-                    headers=headers,
-                    timeout=30.0
-                )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                logger.error(f"Failed to get receipt {receipt_number}: {response.status_code}")
-                return None
-                
-        except Exception as e:
-            business_logger.log_error(
-                user_id=user_id,
-                stage="pos",
-                error_code="RECEIPT_FETCH_ERROR",
-                error_msg=str(e),
-                exception=e
-            )
-            logger.error(f"Exception getting receipt: {e}")
-            return None
-    
-    async def update_inventory(self, inventory_updates: List[Dict[str, Any]], user_id: str) -> bool:
-        """
-        更新库存
-        
-        Args:
-            inventory_updates: 库存更新列表
-            user_id: 用户ID（用于日志）
-            
-        Returns:
-            更新是否成功
-        """
-        try:
-            headers = await loyverse_auth.get_auth_headers()
-            
-            update_data = {"inventory_levels": inventory_updates}
-            
-            async with httpx.AsyncClient() as client:
-                response = await client.post(
-                    f"{self.base_url}/inventory",
-                    headers=headers,
-                    json=update_data,
-                    timeout=30.0
-                )
-            
-            if response.status_code == 200:
-                logger.info(f"Inventory updated successfully for {len(inventory_updates)} items")
-                return True
-            else:
-                logger.error(f"Failed to update inventory: {response.status_code} - {response.text}")
-                return False
-                
-        except Exception as e:
-            business_logger.log_error(
-                user_id=user_id,
-                stage="pos",
-                error_code="INVENTORY_UPDATE_ERROR",
-                error_msg=str(e),
-                exception=e
-            )
-            logger.error(f"Exception updating inventory: {e}")
+            logger.error(f"Exception updating customer: {e}")
             return False
     
-    async def test_connection(self) -> bool:
-        """测试Loyverse连接"""
+    async def get_menu_items(self, user_id: str) -> List[Dict[str, Any]]:
+        """获取菜单项目"""
         try:
-            return await loyverse_auth.test_authentication()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/items",
+                    headers=self.headers,
+                    params={"limit": 250}  # 调整为适当的限制
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        items = data.get("items", [])
+                        
+                        logger.info(f"Retrieved {len(items)} menu items")
+                        return items
+                    
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to get menu items: {response.status} - {error_text}")
+                        return []
+                        
         except Exception as e:
-            logger.error(f"Loyverse connection test failed: {e}")
+            logger.error(f"Exception getting menu items: {e}")
+            return []
+    
+    async def get_categories(self, user_id: str) -> List[Dict[str, Any]]:
+        """获取商品分类"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/categories",
+                    headers=self.headers
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        categories = data.get("categories", [])
+                        
+                        logger.info(f"Retrieved {len(categories)} categories")
+                        return categories
+                    
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to get categories: {response.status} - {error_text}")
+                        return []
+                        
+        except Exception as e:
+            logger.error(f"Exception getting categories: {e}")
+            return []
+    
+    def _generate_receipt_number(self) -> str:
+        """生成收据号码"""
+        import uuid
+        return f"API-{int(datetime.utcnow().timestamp())}-{str(uuid.uuid4())[:8]}"
+    
+    def _clean_phone_number(self, phone: str) -> str:
+        """清理电话号码格式"""
+        # 移除非数字字符
+        import re
+        clean = re.sub(r'[^\d+]', '', phone)
+        
+        # 确保有国际代码
+        if not clean.startswith('+'):
+            if clean.startswith('1'):
+                clean = '+' + clean
+            else:
+                clean = '+1' + clean
+        
+        return clean
+    
+    async def test_connection(self, user_id: str) -> bool:
+        """测试Loyverse API连接"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/stores",
+                    headers=self.headers
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        stores = data.get("stores", [])
+                        logger.info(f"Connection test successful. Found {len(stores)} stores")
+                        return True
+                    else:
+                        logger.error(f"Connection test failed: {response.status}")
+                        return False
+                        
+        except Exception as e:
+            logger.error(f"Connection test exception: {e}")
             return False
 
 # 全局Loyverse客户端实例
