@@ -1,4 +1,8 @@
+"""
+WhatsApp Loyverse Order Bot - 主应用文件
+"""
 import asyncio
+import time
 from typing import Dict, Any, Optional, List
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Request, HTTPException, BackgroundTasks
@@ -8,10 +12,8 @@ import uvicorn
 
 from .config import get_settings
 from .logger import get_logger, business_logger
-from .whatsapp.router import whatsapp_router
-from .pos.loyverse_auth import loyverse_auth
-from .utils.vector_search import vector_search_client
 
+# 延迟导入，避免循环导入问题
 settings = get_settings()
 logger = get_logger(__name__)
 
@@ -22,22 +24,32 @@ async def lifespan(app: FastAPI):
     logger.info("Starting WhatsApp Ordering Bot...")
     
     try:
+        # 动态导入路由和服务
+        from .whatsapp.router import whatsapp_router
+        from .pos.loyverse_auth import loyverse_auth
+        
         # 测试Loyverse连接
         logger.info("Testing Loyverse connection...")
-        loyverse_connected = await loyverse_auth.test_authentication()
-        if loyverse_connected:
-            logger.info("Loyverse connection successful")
-        else:
-            logger.warning("Loyverse connection failed")
+        try:
+            loyverse_connected = await loyverse_auth.test_authentication()
+            if loyverse_connected:
+                logger.info("Loyverse connection successful")
+            else:
+                logger.warning("Loyverse connection failed - check credentials")
+        except Exception as e:
+            logger.warning(f"Loyverse connection test failed: {e}")
         
         # 构建向量搜索索引（如果配置了OpenAI）
-        if settings.openai_api_key:
+        if settings.openai_api_key and settings.openai_api_key != "":
             logger.info("Building vector search index...")
             try:
+                from .utils.vector_search import vector_search_client
                 await vector_search_client.build_embeddings_index()
                 logger.info("Vector search index built successfully")
             except Exception as e:
                 logger.warning(f"Failed to build vector search index: {e}")
+        else:
+            logger.info("Vector search disabled - OpenAI API key not configured")
         
         logger.info("Application startup completed")
         
@@ -49,23 +61,30 @@ async def lifespan(app: FastAPI):
     # 关闭时的清理
     logger.info("Shutting down WhatsApp Ordering Bot...")
     
-    # 清理会话
-    whatsapp_router.cleanup_expired_sessions()
+    try:
+        # 清理会话
+        from .whatsapp.router import whatsapp_router
+        whatsapp_router.cleanup_expired_sessions()
+        logger.info("Sessions cleaned up")
+    except Exception as e:
+        logger.warning(f"Error during cleanup: {e}")
     
     logger.info("Application shutdown completed")
 
 # 创建FastAPI应用
 app = FastAPI(
-    title="WhatsApp Ordering Bot",
-    description="多语言WhatsApp订餐机器人，基于Claude AI和Loyverse POS",
+    title="WhatsApp Loyverse Order Bot",
+    description="AI-powered WhatsApp ordering system with Loyverse POS integration",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc"
 )
 
 # 添加CORS中间件
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=settings.get_cors_origins() if hasattr(settings, 'get_cors_origins') else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -77,7 +96,8 @@ async def log_requests(request: Request, call_next):
     start_time = time.time()
     
     # 记录请求
-    logger.info(f"{request.method} {request.url.path} from {request.client.host if request.client else 'unknown'}")
+    client_ip = request.client.host if request.client else 'unknown'
+    logger.info(f"{request.method} {request.url.path} from {client_ip}")
     
     response = await call_next(request)
     
@@ -87,6 +107,22 @@ async def log_requests(request: Request, call_next):
     
     return response
 
+@app.get("/")
+async def root():
+    """根路径 - 显示应用信息"""
+    return {
+        "message": "WhatsApp Loyverse Order Bot is running!",
+        "status": "healthy",
+        "version": "1.0.0",
+        "restaurant": settings.restaurant_name,
+        "endpoints": {
+            "health": "/health",
+            "docs": "/docs",
+            "webhook": "/webhook/whatsapp",
+            "admin": "/admin/stats"
+        }
+    }
+
 @app.get("/health")
 async def health_check():
     """健康检查端点"""
@@ -95,7 +131,8 @@ async def health_check():
         health_status = {
             "status": "healthy",
             "timestamp": time.time(),
-            "version": "1.0.0"
+            "version": "1.0.0",
+            "environment": settings.environment
         }
         
         # 检查各个组件的状态
@@ -103,41 +140,70 @@ async def health_check():
         
         # 检查Loyverse连接
         try:
+            from .pos.loyverse_auth import loyverse_auth
             loyverse_healthy = await loyverse_auth.test_authentication()
             components["loyverse"] = "healthy" if loyverse_healthy else "unhealthy"
         except Exception as e:
-            components["loyverse"] = "unhealthy"
+            components["loyverse"] = "error"
             logger.warning(f"Loyverse health check failed: {e}")
         
-        # 检查Claude API（通过检查配置）
-        components["claude"] = "healthy" if settings.anthropic_api_key else "not_configured"
-        
-        # 检查Deepgram API
-        components["deepgram"] = "healthy" if settings.deepgram_api_key else "not_configured"
-        
-        # 检查WhatsApp适配器
-        if settings.channel_provider == "twilio":
-            components["whatsapp"] = "healthy" if (settings.twilio_account_sid and settings.twilio_auth_token) else "not_configured"
+        # 检查Claude AI配置
+        if settings.anthropic_api_key and settings.anthropic_api_key not in ["", "placeholder"]:
+            components["claude_ai"] = "configured"
         else:
-            components["whatsapp"] = "healthy" if settings.dialog360_token else "not_configured"
+            components["claude_ai"] = "not_configured"
+        
+        # 检查Deepgram配置
+        if settings.deepgram_api_key and settings.deepgram_api_key not in ["", "placeholder"]:
+            components["speech_to_text"] = "configured"
+        else:
+            components["speech_to_text"] = "not_configured"
+        
+        # 检查WhatsApp配置
+        if settings.channel_provider == "twilio":
+            if settings.twilio_account_sid and settings.twilio_auth_token:
+                components["whatsapp"] = "configured"
+            else:
+                components["whatsapp"] = "not_configured"
+        elif settings.channel_provider == "dialog360":
+            if settings.dialog360_token:
+                components["whatsapp"] = "configured"
+            else:
+                components["whatsapp"] = "not_configured"
+        else:
+            components["whatsapp"] = "invalid_provider"
+        
+        # 检查向量搜索
+        if settings.openai_api_key and settings.openai_api_key not in ["", "placeholder"]:
+            components["vector_search"] = "configured"
+        else:
+            components["vector_search"] = "not_configured"
         
         health_status["components"] = components
         
         # 如果关键组件不健康，返回503
-        critical_components = ["loyverse", "claude", "whatsapp"]
-        unhealthy_critical = [comp for comp in critical_components if components.get(comp) == "unhealthy"]
+        critical_components = ["loyverse", "claude_ai", "whatsapp"]
+        unhealthy_critical = [
+            comp for comp in critical_components 
+            if components.get(comp) in ["unhealthy", "error", "not_configured", "invalid_provider"]
+        ]
         
         if unhealthy_critical:
-            health_status["status"] = "unhealthy"
-            health_status["unhealthy_components"] = unhealthy_critical
-            return JSONResponse(content=health_status, status_code=503)
+            health_status["status"] = "degraded"
+            health_status["issues"] = unhealthy_critical
+            if "loyverse" in unhealthy_critical:
+                return JSONResponse(content=health_status, status_code=503)
         
         return health_status
         
     except Exception as e:
         logger.error(f"Health check failed: {e}")
         return JSONResponse(
-            content={"status": "error", "error": str(e)},
+            content={
+                "status": "error", 
+                "error": str(e),
+                "timestamp": time.time()
+            },
             status_code=500
         )
 
@@ -145,7 +211,7 @@ async def health_check():
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """WhatsApp webhook端点"""
     try:
-        # 获取原始请求体
+        # 获取请求体
         body = await request.body()
         
         # 解析JSON
@@ -156,14 +222,20 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=400, detail="Invalid JSON payload")
         
         # 记录webhook接收
-        logger.info(f"Received WhatsApp webhook: {request.headers.get('user-agent', 'unknown')}")
+        user_agent = request.headers.get('user-agent', 'unknown')
+        logger.info(f"Received WhatsApp webhook from: {user_agent}")
         
-        # 验证webhook（这里可以添加签名验证）
+        # 基本验证
+        if not isinstance(payload, dict):
+            logger.error("Webhook payload is not a dictionary")
+            raise HTTPException(status_code=400, detail="Invalid payload format")
+        
+        # 验证webhook签名（根据提供商）
         if settings.channel_provider == "twilio":
-            # Twilio webhook验证逻辑
+            # TODO: 实现Twilio签名验证
             pass
         elif settings.channel_provider == "dialog360":
-            # 360Dialog webhook验证逻辑
+            # TODO: 实现360Dialog签名验证
             pass
         
         # 在后台处理消息（避免阻塞webhook响应）
@@ -185,18 +257,33 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         )
         
         # 仍然返回200以避免webhook重试
-        return JSONResponse(content={"status": "error", "error": "internal_error"}, status_code=200)
+        return JSONResponse(
+            content={"status": "error", "error": "internal_error"}, 
+            status_code=200
+        )
 
 async def process_webhook_message(payload: Dict[str, Any]):
     """后台处理webhook消息"""
     try:
+        from .whatsapp.router import whatsapp_router
+        
+        # 处理消息
         result = await whatsapp_router.handle_incoming_message(payload)
-        logger.info(f"Message processed: {result.get('status', 'unknown')}")
+        
+        status = result.get('status', 'unknown') if isinstance(result, dict) else 'processed'
+        logger.info(f"Message processed: {status}")
         
     except Exception as e:
         logger.error(f"Background message processing error: {e}")
+        
+        # 从payload中提取用户信息
+        from_number = "unknown"
+        if isinstance(payload, dict):
+            # Twilio格式
+            from_number = payload.get("From", payload.get("from_number", "unknown"))
+        
         business_logger.log_error(
-            user_id=payload.get("from_number", "unknown"),
+            user_id=from_number,
             stage="processing",
             error_code="BACKGROUND_PROCESS_ERROR",
             error_msg=str(e),
@@ -205,28 +292,42 @@ async def process_webhook_message(payload: Dict[str, Any]):
 
 @app.get("/webhook/whatsapp")
 async def whatsapp_webhook_verification(request: Request):
-    """WhatsApp webhook验证端点（用于Twilio等）"""
+    """WhatsApp webhook验证端点（用于某些提供商的验证流程）"""
     try:
-        # Twilio webhook验证
+        # 获取查询参数
         hub_mode = request.query_params.get("hub.mode")
         hub_verify_token = request.query_params.get("hub.verify_token")
         hub_challenge = request.query_params.get("hub.challenge")
         
-        if hub_mode == "subscribe" and hub_verify_token == "your_verify_token":
+        logger.info(f"Webhook verification request: mode={hub_mode}, token={hub_verify_token}")
+        
+        # 简单的验证逻辑（在生产环境中应该使用更安全的验证）
+        expected_token = "whatsapp_verify_token"  # 应该从环境变量获取
+        
+        if hub_mode == "subscribe" and hub_verify_token == expected_token:
             logger.info("Webhook verification successful")
-            return int(hub_challenge)
+            return int(hub_challenge) if hub_challenge else "verified"
         else:
-            logger.warning("Webhook verification failed")
+            logger.warning(f"Webhook verification failed: mode={hub_mode}, token={hub_verify_token}")
             raise HTTPException(status_code=403, detail="Verification failed")
             
+    except ValueError:
+        logger.error("Invalid challenge value")
+        raise HTTPException(status_code=400, detail="Invalid challenge")
     except Exception as e:
         logger.error(f"Webhook verification error: {e}")
         raise HTTPException(status_code=500, detail="Verification error")
+
+# ==============================================================================
+# 管理端点
+# ==============================================================================
 
 @app.post("/admin/cleanup-sessions")
 async def cleanup_sessions():
     """管理端点：清理过期会话"""
     try:
+        from .whatsapp.router import whatsapp_router
+        
         initial_count = len(whatsapp_router.user_sessions)
         whatsapp_router.cleanup_expired_sessions()
         final_count = len(whatsapp_router.user_sessions)
@@ -236,7 +337,8 @@ async def cleanup_sessions():
         return {
             "status": "success",
             "sessions_cleaned": cleaned_count,
-            "remaining_sessions": final_count
+            "remaining_sessions": final_count,
+            "timestamp": time.time()
         }
         
     except Exception as e:
@@ -247,12 +349,17 @@ async def cleanup_sessions():
 async def rebuild_vector_index():
     """管理端点：重建向量搜索索引"""
     try:
-        if not settings.openai_api_key:
+        if not settings.openai_api_key or settings.openai_api_key in ["", "placeholder"]:
             raise HTTPException(status_code=400, detail="OpenAI API key not configured")
         
+        from .utils.vector_search import vector_search_client
         await vector_search_client.build_embeddings_index()
         
-        return {"status": "success", "message": "Vector index rebuilt successfully"}
+        return {
+            "status": "success", 
+            "message": "Vector index rebuilt successfully",
+            "timestamp": time.time()
+        }
         
     except Exception as e:
         logger.error(f"Index rebuild error: {e}")
@@ -262,10 +369,21 @@ async def rebuild_vector_index():
 async def get_stats():
     """管理端点：获取统计信息"""
     try:
+        from .whatsapp.router import whatsapp_router
+        from .pos.loyverse_auth import loyverse_auth
+        
         stats = {
+            "timestamp": time.time(),
             "active_sessions": len(whatsapp_router.user_sessions),
             "provider": settings.channel_provider,
-            "loyverse_token_info": loyverse_auth.get_token_info()
+            "environment": settings.environment,
+            "restaurant": settings.restaurant_name,
+            "components": {
+                "loyverse_token_valid": loyverse_auth.get_token_info().get("valid", False) if hasattr(loyverse_auth, 'get_token_info') else "unknown",
+                "ai_configured": bool(settings.anthropic_api_key and settings.anthropic_api_key != "placeholder"),
+                "speech_configured": bool(settings.deepgram_api_key and settings.deepgram_api_key != "placeholder"),
+                "vector_search_configured": bool(settings.openai_api_key and settings.openai_api_key != "placeholder")
+            }
         }
         
         return stats
@@ -273,6 +391,41 @@ async def get_stats():
     except Exception as e:
         logger.error(f"Stats error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/admin/config")
+async def get_config():
+    """管理端点：获取非敏感配置信息"""
+    try:
+        config_info = {
+            "restaurant_name": settings.restaurant_name,
+            "environment": settings.environment,
+            "channel_provider": settings.channel_provider,
+            "tax_rate": settings.tax_rate,
+            "preparation_times": {
+                "basic": settings.preparation_time_basic,
+                "complex": settings.preparation_time_complex
+            },
+            "ai_settings": {
+                "model": settings.anthropic_model,
+                "fuzzy_threshold": settings.fuzzy_match_threshold,
+                "vector_threshold": getattr(settings, 'vector_search_threshold', 0.7)
+            },
+            "features": {
+                "voice_enabled": bool(settings.deepgram_api_key and settings.deepgram_api_key != "placeholder"),
+                "vector_search_enabled": bool(settings.openai_api_key and settings.openai_api_key != "placeholder"),
+                "analytics_enabled": getattr(settings, 'enable_analytics', True)
+            }
+        }
+        
+        return config_info
+        
+    except Exception as e:
+        logger.error(f"Config endpoint error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ==============================================================================
+# 异常处理
+# ==============================================================================
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -289,12 +442,16 @@ async def global_exception_handler(request: Request, exc: Exception):
     
     return JSONResponse(
         status_code=500,
-        content={"error": "Internal server error"}
+        content={
+            "error": "Internal server error",
+            "timestamp": time.time(),
+            "request_path": str(request.url.path)
+        }
     )
 
-# 导入time模块（修复前面缺少的导入）
-import time
-from typing import Dict, Any
+# ==============================================================================
+# 应用启动
+# ==============================================================================
 
 if __name__ == "__main__":
     uvicorn.run(
@@ -302,5 +459,6 @@ if __name__ == "__main__":
         host="0.0.0.0",
         port=settings.port,
         log_level=settings.log_level.lower(),
-        reload=settings.environment == "development"
+        reload=(settings.environment == "development"),
+        access_log=True
     )
