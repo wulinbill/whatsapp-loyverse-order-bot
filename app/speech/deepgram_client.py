@@ -120,7 +120,7 @@ class DeepgramSpeechClient:
             return None
 
 # 全局Deepgram客户端实例
-deepgram_client = DeepgramSpeechClient()取转录文字
+deepgram_client = DeepgramSpeechClient()
             transcript = self._extract_transcript(response)
             
             if transcript:
