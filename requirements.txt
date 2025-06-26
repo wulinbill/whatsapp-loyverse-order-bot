@@ -1,10 +1,35 @@
-fastapi==0.110.0
-uvicorn[standard]==0.29.0
-httpx==0.27.0
-pydantic==2.7.1
-python-dotenv==1.0.1
-rapidfuzz==3.6.1
-pgvector==0.2.5
-psycopg[binary]==3.1.18
-anthropic==0.20.0
-deepgram-sdk==2.13.1
+# Web框架
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.1
+
+# WhatsApp/SMS支持
+twilio>=9.0.0
+
+# Claude AI支持
+anthropic>=0.34.0
+
+# 语音转文字
+deepgram-sdk>=3.5.0
+
+# HTTP客户端
+httpx>=0.27.0
+requests>=2.31.0
+
+# 文本匹配和搜索
+rapidfuzz>=3.5.0
+numpy>=1.24.0
+
+# 向量搜索
+openai>=1.35.0
+pgvector>=0.2.0
+psycopg2-binary>=2.9.0
+
+# 数据处理
+unicodedata2>=15.0.0
+python-dotenv>=1.0.0
+
+# 开发和测试工具
+pytest>=7.0.0
+pytest-mock>=3.0.0
+pytest-asyncio>=0.21.0
