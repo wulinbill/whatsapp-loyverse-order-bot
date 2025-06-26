@@ -180,6 +180,8 @@ class WhatsAppRouter:
         text_content = message_data.get("body", "").strip()
         current_state = session.state
         
+        logger.info(f"Processing text message for user {user_id} in state {current_state}: '{text_content}'")
+        
         # 根据会话状态处理消息
         if current_state == ConversationState.GREETING:
             return await self._handle_greeting_state(user_id, text_content, session)
@@ -193,6 +195,7 @@ class WhatsAppRouter:
             return await self._handle_name_state(user_id, text_content, session)
         else:
             # 默认回到问候状态
+            logger.warning(f"Unknown state {current_state} for user {user_id}, resetting to greeting")
             session.state = ConversationState.GREETING
             # session 是引用，不需要额外调用 update_user_session
             return await self._handle_greeting_state(user_id, text_content, session)
@@ -309,18 +312,26 @@ class WhatsAppRouter:
             return {"status": "error", "error": str(e)}
     
     async def _match_and_resolve_items(self, order_lines: List[Dict[str, Any]], user_id: str) -> List[Dict[str, Any]]:
-        """匹配和解析菜品项目 - 按照最新文档的步骤3A和3B"""
+        """匹配和解析菜品项目 - 按照最新文档的步骤3A和3B，优化数量提取"""
         matched_items = []
         
         for line in order_lines:
             alias = line.get("alias", "")
-            quantity = line.get("quantity", 1)
+            original_quantity = line.get("quantity", 1)
             
             if not alias:
                 continue
             
-            # 步骤3A-1: 首先使用RapidFuzz尝试匹配 (token_set_ratio ≥ 80)
-            rapidfuzz_matches = alias_matcher.find_matches(alias, user_id, limit=5)
+            # 预处理：提取数量并清理文本
+            extracted_quantity, cleaned_alias = self._extract_quantity_and_clean_text(alias)
+            
+            # 使用提取的数量，如果Claude已经识别了数量则优先使用Claude的结果
+            final_quantity = original_quantity if original_quantity > 1 else extracted_quantity
+            
+            logger.info(f"Processing alias '{alias}' -> cleaned: '{cleaned_alias}', quantity: {final_quantity}")
+            
+            # 步骤3A-1: 首先使用RapidFuzz尝试匹配清理后的文本 (token_set_ratio ≥ 80)
+            rapidfuzz_matches = alias_matcher.find_matches(cleaned_alias, user_id, limit=5)
             
             if rapidfuzz_matches:
                 # RapidFuzz找到匹配，处理结果
@@ -329,8 +340,9 @@ class WhatsAppRouter:
                 if len(top_matches) > 1:
                     # 有多个高分匹配，需要用户选择
                     matched_item = {
-                        "original_alias": alias,
-                        "quantity": quantity,
+                        "original_alias": alias,  # 保留原始输入
+                        "cleaned_alias": cleaned_alias,  # 保存清理后的文本
+                        "quantity": final_quantity,
                         "matches": top_matches,
                         "needs_choice": True
                     }
@@ -344,15 +356,19 @@ class WhatsAppRouter:
                         "category_name": best_match.get("category_name"),
                         "price": best_match.get("price", 0),
                         "sku": best_match.get("sku"),
-                        "quantity": quantity,
+                        "quantity": final_quantity,
                         "original_alias": alias,
-                        "needs_choice": False
+                        "cleaned_alias": cleaned_alias,
+                        "needs_choice": False,
+                        "match_method": "rapidfuzz"
                     }
                 
                 matched_items.append(matched_item)
+                logger.info(f"RapidFuzz match found for '{cleaned_alias}': {matched_item.get('item_name', 'multiple options')}")
             else:
                 # 步骤3A-2: RapidFuzz失败，调用Claude 4对menu_kb.json进行直接匹配
-                claude_match = await self._claude_menu_matching(alias, user_id)
+                logger.info(f"RapidFuzz failed for '{cleaned_alias}', trying Claude menu matching")
+                claude_match = await self._claude_menu_matching(cleaned_alias, user_id)
                 
                 if claude_match:
                     matched_item = {
@@ -362,15 +378,17 @@ class WhatsAppRouter:
                         "category_name": claude_match.get("category_name"),
                         "price": claude_match.get("price", 0),
                         "sku": claude_match.get("sku"),
-                        "quantity": quantity,
+                        "quantity": final_quantity,
                         "original_alias": alias,
+                        "cleaned_alias": cleaned_alias,
                         "needs_choice": False,
                         "match_method": "claude_menu_kb"
                     }
                     matched_items.append(matched_item)
+                    logger.info(f"Claude menu matching found item for '{cleaned_alias}': {claude_match.get('item_name')}")
                 else:
                     # Claude也无法匹配，记录但不添加到结果中
-                    logger.warning(f"No match found for alias '{alias}' using both RapidFuzz and Claude menu matching")
+                    logger.warning(f"No match found for alias '{alias}' (cleaned: '{cleaned_alias}') using both RapidFuzz and Claude menu matching")
         
         return matched_items
     
@@ -398,9 +416,11 @@ class WhatsAppRouter:
     def _build_choice_message(self, ambiguous_item: Dict[str, Any]) -> str:
         """构建选择消息 - 步骤3B"""
         matches = ambiguous_item.get("matches", [])
-        alias = ambiguous_item.get("original_alias", "")
+        original_alias = ambiguous_item.get("original_alias", "")
+        cleaned_alias = ambiguous_item.get("cleaned_alias", original_alias)
         
-        message_lines = [f"Para '{alias}', encontré estas opciones:"]
+        # 使用原始别名来显示给用户，保持上下文
+        message_lines = [f"Para '{original_alias}', encontré estas opciones:"]
         
         for i, match in enumerate(matches[:3], 1):
             name = match.get("item_name", "")
@@ -499,16 +519,79 @@ class WhatsAppRouter:
                 return {"status": "processed", "action": "next_choice_needed"}
             else:
                 # 所有选择完成，确认订单
+                logger.info(f"All choices completed for user {user_id}, moving to confirmation state")
                 confirmation_message = self._build_confirmation_message(matched_items)
                 await self._send_response(user_id, confirmation_message)
                 session.state = ConversationState.CONFIRMING_ORDER
+                logger.info(f"User {user_id} state changed to: {session.state}")
                 return {"status": "processed", "action": "choices_completed"}
         else:
             # 无效选择
             await self._send_response(user_id, "Por favor, seleccione un número válido de las opciones mostradas.")
             return {"status": "processed", "action": "invalid_choice"}
     
+    def _extract_quantity_and_clean_text(self, text: str) -> tuple[int, str]:
+        """提取数量并清理文本，返回(数量, 清理后的文本)"""
+        import re
+        
+        # 西班牙语数字词汇映射
+        spanish_numbers = {
+            "un": 1, "una": 1, "uno": 1,
+            "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5,
+            "seis": 6, "siete": 7, "ocho": 8, "nueve": 9, "diez": 10,
+            "once": 11, "doce": 12, "trece": 13, "catorce": 14, "quince": 15,
+            "veinte": 20, "veintiuno": 21, "treinta": 30
+        }
+        
+        text_lower = text.lower().strip()
+        quantity = 1  # 默认数量
+        
+        # 1. 首先查找阿拉伯数字
+        digit_match = re.search(r'\b(\d+)\b', text_lower)
+        if digit_match:
+            quantity = int(digit_match.group(1))
+            # 移除数字
+            text_lower = re.sub(r'\b\d+\b', '', text_lower).strip()
+        else:
+            # 2. 查找西班牙语数字词汇
+            for word, num in spanish_numbers.items():
+                # 使用单词边界确保完整匹配
+                pattern = r'\b' + re.escape(word) + r'\b'
+                if re.search(pattern, text_lower):
+                    quantity = num
+                    # 移除找到的数字词汇
+                    text_lower = re.sub(pattern, '', text_lower).strip()
+                    break
+        
+        # 3. 清理多余的空格
+        cleaned_text = ' '.join(text_lower.split())
+        
+        return quantity, cleaned_text
+    
     def _parse_choice_number(self, text: str) -> Optional[int]:
+        """解析用户选择的数字"""
+        import re
+        
+        # 查找数字
+        numbers = re.findall(r'\d+', text)
+        if numbers:
+            return int(numbers[0])
+        
+        # 查找文字数字
+        word_to_num = {
+            "uno": 1, "una": 1, "primero": 1, "primera": 1,
+            "dos": 2, "segundo": 2, "segunda": 2,
+            "tres": 3, "tercero": 3, "tercera": 3,
+            "cuatro": 4, "cuarto": 4, "cuarta": 4,
+            "cinco": 5, "quinto": 5, "quinta": 5
+        }
+        
+        text_lower = text.lower()
+        for word, num in word_to_num.items():
+            if word in text_lower:
+                return num
+        
+        return None
         """解析用户选择的数字"""
         import re
         
@@ -535,13 +618,25 @@ class WhatsAppRouter:
     
     async def _handle_confirming_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理确认状态 - 询问是否还要其他"""
-        text_lower = text_content.lower()
+        text_lower = text_content.lower().strip()
+        
+        logger.info(f"Handling confirming state for user {user_id}: '{text_content}' (state: {session.state})")
         
         # 检查是否要添加更多项目
         add_more_keywords = ["sí", "si", "yes", "también", "más", "quiero", "dame", "añade", "agrega"]
-        no_more_keywords = ["no", "nada", "está bien", "es todo", "ya", "terminar", "finalizar"]
+        no_more_keywords = ["no", "nada", "está bien", "es todo", "ya", "terminar", "finalizar", "listo"]
         
-        if any(keyword in text_lower for keyword in add_more_keywords) and not any(keyword in text_lower for keyword in no_more_keywords):
+        # 明确的"不要更多"回复
+        if any(keyword in text_lower for keyword in no_more_keywords):
+            logger.info(f"User {user_id} indicated no more items, proceeding to name collection")
+            # 用户不要更多，进入询问姓名阶段
+            session.state = ConversationState.ASKING_NAME
+            await self._send_response(user_id, "Para finalizar, ¿a nombre de quién registramos la orden?")
+            return {"status": "processed", "action": "asking_name"}
+        
+        # 明确的"要更多"回复
+        elif any(keyword in text_lower for keyword in add_more_keywords) and not any(keyword in text_lower for keyword in no_more_keywords):
+            logger.info(f"User {user_id} wants to add more items")
             # 用户想要添加更多
             if self._contains_order_keywords(text_content):
                 # 直接包含了新的订单项
@@ -553,20 +648,16 @@ class WhatsAppRouter:
                 session.state = ConversationState.ORDERING
                 return {"status": "processed", "action": "asking_for_more"}
         
-        elif any(keyword in text_lower for keyword in no_more_keywords):
-            # 用户不要更多，进入询问姓名阶段
-            session.state = ConversationState.ASKING_NAME
-            await self._send_response(user_id, "Para finalizar, ¿a nombre de quién registramos la orden?")
-            return {"status": "processed", "action": "asking_name"}
-        
         else:
-            # 可能是新的订单项
+            # 检查是否直接是新的订单项
             if self._contains_order_keywords(text_content):
+                logger.info(f"User {user_id} provided new order items directly")
                 session.state = ConversationState.ORDERING
                 return await self._handle_ordering_state(user_id, text_content, session)
             else:
-                # 不明确的回复
-                await self._send_response(user_id, "¿Algo más que quieras ordenar?")
+                # 不明确的回复，再次询问
+                logger.info(f"Ambiguous response from user {user_id}, asking for clarification")
+                await self._send_response(user_id, "¿Algo más que quieras ordenar? Responde 'sí' para agregar más o 'no' para finalizar.")
                 return {"status": "processed", "action": "clarifying_if_more"}
     
     async def _handle_name_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
