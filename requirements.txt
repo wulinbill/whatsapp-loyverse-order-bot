@@ -22,7 +22,7 @@ numpy>=1.24.0
 
 # 向量搜索
 openai>=1.35.0
-pgvector>=0.2.0
+pgvector-binary==0.2.5
 psycopg2-binary>=2.9.0
 
 # 数据处理
