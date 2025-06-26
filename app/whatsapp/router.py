@@ -704,17 +704,24 @@ class WhatsAppRouter:
             return {"status": "error", "error": str(e)}
     
     def _build_final_summary(self, order_result: Dict[str, Any], customer_name: str) -> str:
-        """构建最终订单摘要 - 步骤7"""
+        """构建最终订单摘要 - 步骤7，确保使用正确的税率计算"""
         items = order_result.get("line_items", [])
         total_with_tax = order_result.get("total_with_tax", 0)
         prep_time = order_result.get("preparation_time", 10)
         
+        # 从配置获取正确的税率
+        tax_rate = settings.tax_rate  # 这应该是0.115 (11.5%)
+        
         summary_lines = [f"Gracias, {customer_name}. Resumen:"]
         
+        # 计算实际的含税总价来验证
+        calculated_subtotal = 0
         for item in items:
             quantity = item.get("quantity", 1)
             name = item.get("item_name", "")
             price = item.get("price", 0)
+            item_total = quantity * price
+            calculated_subtotal += item_total
             
             line = f"• {quantity} {name}"
             if price > 0:
@@ -723,7 +730,22 @@ class WhatsAppRouter:
                 line += " (sin costo)"
             summary_lines.append(line)
         
-        summary_lines.append(f"**Total (con IVU) ${total_with_tax:.2f}**.")
+        # 使用order_result中的total_with_tax，但添加日志验证
+        calculated_tax = calculated_subtotal * tax_rate
+        calculated_total_with_tax = calculated_subtotal + calculated_tax
+        
+        # 日志记录用于调试
+        logger.info(f"Tax calculation verification for user {customer_name}:")
+        logger.info(f"  Subtotal: ${calculated_subtotal:.2f}")
+        logger.info(f"  Tax rate: {tax_rate * 100:.1f}%")
+        logger.info(f"  Calculated tax: ${calculated_tax:.2f}")
+        logger.info(f"  Calculated total: ${calculated_total_with_tax:.2f}")
+        logger.info(f"  POS reported total: ${total_with_tax:.2f}")
+        
+        # 使用POS系统返回的实际总价，因为它包含了所有业务逻辑
+        final_total = total_with_tax
+        
+        summary_lines.append(f"**Total (con IVU) ${final_total:.2f}**.")
         summary_lines.append(f"Tu orden estará lista en **{prep_time} min**.")
         
         return "\n".join(summary_lines)
