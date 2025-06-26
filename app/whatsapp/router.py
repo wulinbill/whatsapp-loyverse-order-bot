@@ -1,6 +1,6 @@
 import time
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, List, Any, Optional
 from enum import Enum
 
 from ..config import get_settings
