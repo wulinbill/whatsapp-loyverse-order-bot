@@ -1,7 +1,7 @@
 # Web框架
 fastapi==0.104.1
 uvicorn[standard]==0.24.0
-pydantic==2.5.1
+pydantic>=2.8.0  # Updated to newer version with precompiled wheels
 
 # WhatsApp/SMS支持
 twilio>=9.0.0
