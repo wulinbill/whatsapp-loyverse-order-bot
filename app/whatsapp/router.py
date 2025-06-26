@@ -205,7 +205,7 @@ class WhatsAppRouter:
             session.state = ConversationState.ORDERING
             return await self._handle_ordering_state(user_id, text_content, session)
         
-        # 发送问候消息
+        # 发送问候消息（只有在没有订单关键词时）
         greeting_message = "¡Hola! Bienvenido a Kong Food 🍗. ¿Qué te gustaría ordenar hoy?"
         await self._send_response(user_id, greeting_message)
         session.state = ConversationState.ORDERING
@@ -217,7 +217,8 @@ class WhatsAppRouter:
         order_keywords = [
             "quiero", "necesito", "dame", "pido", "ordenar", "pedido",
             "pollo", "carne", "arroz", "presas", "combinación", "combo",
-            "pechuga", "muro", "cadera", "pepper", "churrasco"
+            "pechuga", "muro", "cadera", "pepper", "churrasco", 
+            "sopa", "china", "papa", "frita", "tostones", "ensalada"  # 添加更多菜品关键词
         ]
         text_lower = text.lower()
         return any(keyword in text_lower for keyword in order_keywords)
@@ -225,8 +226,8 @@ class WhatsAppRouter:
     async def _handle_ordering_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理订餐状态 - 使用Claude解析并确认"""
         try:
-            # 步骤2: 使用Claude解析订单
-            claude_result = await claude_client.draft_order(text_content, user_id)
+            # 步骤2: 使用Claude extract_order函数（按照文档要求）
+            claude_result = await claude_client.extract_order(text_content, user_id, [])
             
             if claude_result.get("need_clarify", True):
                 # 步骤4: 需要澄清
@@ -301,7 +302,7 @@ class WhatsAppRouter:
             return {"status": "error", "error": str(e)}
     
     async def _match_and_resolve_items(self, order_lines: List[Dict[str, Any]], user_id: str) -> List[Dict[str, Any]]:
-        """匹配和解析菜品项目 - 步骤3A和3B"""
+        """匹配和解析菜品项目 - 按照最新文档的步骤3A和3B"""
         matched_items = []
         
         for line in order_lines:
@@ -311,17 +312,12 @@ class WhatsAppRouter:
             if not alias:
                 continue
             
-            # 步骤3A: 使用RapidFuzz和PGVector解析别名
-            matches = alias_matcher.find_matches(alias, user_id, limit=5)
+            # 步骤3A-1: 首先使用RapidFuzz尝试匹配 (token_set_ratio ≥ 80)
+            rapidfuzz_matches = alias_matcher.find_matches(alias, user_id, limit=5)
             
-            if not matches:
-                # 如果没有匹配，尝试向量搜索
-                vector_matches = await vector_search_client.search_similar_items(alias, user_id, limit=3)
-                matches = vector_matches
-            
-            if matches:
-                # 如果有多个匹配度相近的结果，标记为需要选择
-                top_matches = [m for m in matches if m.get("score", 0) >= 80]
+            if rapidfuzz_matches:
+                # RapidFuzz找到匹配，处理结果
+                top_matches = [m for m in rapidfuzz_matches if m.get("score", 0) >= 80]
                 
                 if len(top_matches) > 1:
                     # 有多个高分匹配，需要用户选择
@@ -333,7 +329,7 @@ class WhatsAppRouter:
                     }
                 else:
                     # 单一最佳匹配
-                    best_match = matches[0]
+                    best_match = rapidfuzz_matches[0]
                     matched_item = {
                         "item_id": best_match.get("item_id"),
                         "variant_id": best_match.get("variant_id"),
@@ -347,8 +343,46 @@ class WhatsAppRouter:
                     }
                 
                 matched_items.append(matched_item)
+            else:
+                # 步骤3A-2: RapidFuzz失败，调用Claude 4对menu_kb.json进行直接匹配
+                claude_match = await self._claude_menu_matching(alias, user_id)
+                
+                if claude_match:
+                    matched_item = {
+                        "item_id": claude_match.get("item_id"),
+                        "variant_id": claude_match.get("variant_id"),
+                        "item_name": claude_match.get("item_name"),
+                        "category_name": claude_match.get("category_name"),
+                        "price": claude_match.get("price", 0),
+                        "sku": claude_match.get("sku"),
+                        "quantity": quantity,
+                        "original_alias": alias,
+                        "needs_choice": False,
+                        "match_method": "claude_menu_kb"
+                    }
+                    matched_items.append(matched_item)
+                else:
+                    # Claude也无法匹配，记录但不添加到结果中
+                    logger.warning(f"No match found for alias '{alias}' using both RapidFuzz and Claude menu matching")
         
         return matched_items
+    
+    async def _claude_menu_matching(self, alias: str, user_id: str) -> Optional[Dict[str, Any]]:
+        """使用Claude 4对menu_kb.json进行直接匹配 - 按照最新文档流程"""
+        try:
+            # 调用Claude客户端进行菜单匹配
+            match_result = await claude_client.match_menu_item(alias, user_id)
+            
+            if match_result and match_result.get("found"):
+                logger.info(f"Claude menu matching found item for '{alias}': {match_result.get('item_name')}")
+                return match_result
+            else:
+                logger.info(f"Claude menu matching found no match for '{alias}'")
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error in Claude menu matching for '{alias}': {e}")
+            return None
     
     def _find_ambiguous_items(self, matched_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """查找需要用户选择的歧义项目"""
@@ -395,7 +429,7 @@ class WhatsAppRouter:
             return await self._handle_choice_response(user_id, text_content, session)
         
         # 重新分析澄清后的回复
-        claude_result = await claude_client.draft_order(text_content, user_id)
+        claude_result = await claude_client.extract_order(text_content, user_id, [])
         
         if not claude_result.get("need_clarify", False) and claude_result.get("order_lines"):
             # 澄清成功，处理订单
