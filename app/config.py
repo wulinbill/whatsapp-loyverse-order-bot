@@ -135,8 +135,8 @@ class Settings(BaseSettings):
         description="Restaurant name"
     )
     tax_rate: float = Field(
-        default=0.11,
-        description="Tax rate (e.g., 0.11 for 11%)"
+        default=0.115,
+        description="Tax rate (e.g., 0.115 for 11.5%)"
     )
     preparation_time_basic: int = Field(
         default=10,
