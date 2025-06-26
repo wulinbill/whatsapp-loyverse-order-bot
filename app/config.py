@@ -1,71 +1,325 @@
-from pydantic import BaseModel, Field
+from pydantic import Field
+from pydantic_settings import BaseSettings
 from functools import lru_cache
 import os
 from dotenv import load_dotenv
 
+# 加载 .env 文件
 load_dotenv()
 
-class Settings(BaseModel):
+class Settings(BaseSettings):
+    """应用配置设置"""
+    
+    # ========================================================================
     # Claude AI配置
-    anthropic_api_key: str = Field(..., env="CLAUDE_API_KEY")
-    anthropic_model: str = Field(default="claude-4-opus-20250514", env="CLAUDE_MODEL")
+    # ========================================================================
+    anthropic_api_key: str = Field(
+        description="Anthropic Claude API Key"
+    )
+    anthropic_model: str = Field(
+        default="claude-3-sonnet-20240229",
+        description="Claude model to use"
+    )
     
+    # ========================================================================
     # Deepgram语音转文字配置
-    deepgram_api_key: str = Field(..., env="DEEPGRAM_API_KEY")
-    deepgram_model: str = Field(default="nova-3", env="DEEPGRAM_MODEL")
+    # ========================================================================
+    deepgram_api_key: str = Field(
+        description="Deepgram API Key for speech-to-text"
+    )
+    deepgram_model: str = Field(
+        default="nova-2",
+        description="Deepgram model to use"
+    )
     
+    # ========================================================================
     # WhatsApp配置
-    channel_provider: str = Field(default="twilio", env="CHANNEL_PROVIDER")  # twilio or dialog360
+    # ========================================================================
+    channel_provider: str = Field(
+        default="twilio",
+        description="WhatsApp provider: twilio or dialog360"
+    )
     
+    # ========================================================================
     # Twilio配置
-    twilio_account_sid: str = Field(default="", env="TWILIO_ACCOUNT_SID")
-    twilio_auth_token: str = Field(default="", env="TWILIO_AUTH_TOKEN")
-    twilio_whatsapp_number: str = Field(default="", env="TWILIO_WHATSAPP_NUMBER")
+    # ========================================================================
+    twilio_account_sid: str = Field(
+        default="",
+        description="Twilio Account SID"
+    )
+    twilio_auth_token: str = Field(
+        default="",
+        description="Twilio Auth Token"
+    )
+    twilio_whatsapp_number: str = Field(
+        default="",
+        description="Twilio WhatsApp number (e.g., whatsapp:+14155238886)"
+    )
     
+    # ========================================================================
     # 360Dialog配置
-    dialog360_token: str = Field(default="", env="DIALOG360_TOKEN")
-    dialog360_phone_number: str = Field(default="", env="DIALOG360_PHONE_NUMBER")
+    # ========================================================================
+    dialog360_token: str = Field(
+        default="",
+        description="360Dialog API token"
+    )
+    dialog360_phone_number: str = Field(
+        default="",
+        description="360Dialog phone number"
+    )
     
+    # ========================================================================
     # Loyverse POS配置
-    loyverse_client_id: str = Field(..., env="LOYVERSE_CLIENT_ID")
-    loyverse_client_secret: str = Field(..., env="LOYVERSE_CLIENT_SECRET")
-    loyverse_refresh_token: str = Field(..., env="LOYVERSE_REFRESH_TOKEN")
-    loyverse_store_id: str = Field(..., env="LOYVERSE_STORE_ID")
-    loyverse_pos_device_id: str = Field(..., env="LOYVERSE_POS_DEVICE_ID")
-    loyverse_default_payment_type_id: str = Field(default="", env="LOYVERSE_DEFAULT_PAYMENT_TYPE_ID")
-    loyverse_base_url: str = Field(default="https://api.loyverse.com/v1.0", env="LOYVERSE_BASE_URL")
+    # ========================================================================
+    loyverse_client_id: str = Field(
+        description="Loyverse OAuth Client ID"
+    )
+    loyverse_client_secret: str = Field(
+        description="Loyverse OAuth Client Secret"
+    )
+    loyverse_refresh_token: str = Field(
+        description="Loyverse OAuth Refresh Token"
+    )
+    loyverse_store_id: str = Field(
+        description="Loyverse Store ID"
+    )
+    loyverse_pos_device_id: str = Field(
+        description="Loyverse POS Device ID"
+    )
+    loyverse_default_payment_type_id: str = Field(
+        default="",
+        description="Default payment type ID in Loyverse"
+    )
+    loyverse_base_url: str = Field(
+        default="https://api.loyverse.com/v1.0",
+        description="Loyverse API base URL"
+    )
     
+    # ========================================================================
     # OpenAI向量搜索配置
-    openai_api_key: str = Field(default="", env="OPENAI_API_KEY")
-    openai_embedding_model: str = Field(default="text-embedding-3-small", env="OPENAI_EMBEDDING_MODEL")
+    # ========================================================================
+    openai_api_key: str = Field(
+        default="",
+        description="OpenAI API Key for embeddings"
+    )
+    openai_embedding_model: str = Field(
+        default="text-embedding-3-small",
+        description="OpenAI embedding model"
+    )
     
+    # ========================================================================
     # PostgreSQL向量数据库配置
-    postgres_host: str = Field(default="localhost", env="POSTGRES_HOST")
-    postgres_port: int = Field(default=5432, env="POSTGRES_PORT")
-    postgres_db: str = Field(default="whatsapp_bot", env="POSTGRES_DB")
-    postgres_user: str = Field(default="postgres", env="POSTGRES_USER")
-    postgres_password: str = Field(default="", env="POSTGRES_PASSWORD")
+    # ========================================================================
+    postgres_host: str = Field(
+        default="localhost",
+        description="PostgreSQL host"
+    )
+    postgres_port: int = Field(
+        default=5432,
+        description="PostgreSQL port"
+    )
+    postgres_db: str = Field(
+        default="whatsapp_bot",
+        description="PostgreSQL database name"
+    )
+    postgres_user: str = Field(
+        default="postgres",
+        description="PostgreSQL username"
+    )
+    postgres_password: str = Field(
+        default="",
+        description="PostgreSQL password"
+    )
     
+    # 数据库URL（自动构建）
+    @property
+    def database_url(self) -> str:
+        """构建PostgreSQL连接URL"""
+        if self.postgres_password:
+            return f"postgresql://{self.postgres_user}:{self.postgres_password}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+        else:
+            return f"postgresql://{self.postgres_user}@{self.postgres_host}:{self.postgres_port}/{self.postgres_db}"
+    
+    # ========================================================================
     # 应用配置
-    log_level: str = Field(default="INFO", env="LOG_LEVEL")
-    port: int = Field(default=8000, env="PORT")
-    environment: str = Field(default="development", env="ENVIRONMENT")
+    # ========================================================================
+    log_level: str = Field(
+        default="INFO",
+        description="Logging level"
+    )
+    port: int = Field(
+        default=8000,
+        description="Application port"
+    )
+    environment: str = Field(
+        default="development",
+        description="Application environment"
+    )
+    debug: bool = Field(
+        default=False,
+        description="Enable debug mode"
+    )
     
+    # ========================================================================
     # 业务配置
-    restaurant_name: str = Field(default="Kong Food Restaurant", env="RESTAURANT_NAME")
-    tax_rate: float = Field(default=0.11, env="TAX_RATE")
-    preparation_time_basic: int = Field(default=10, env="PREPARATION_TIME_BASIC")  # 分钟
-    preparation_time_complex: int = Field(default=15, env="PREPARATION_TIME_COMPLEX")  # 分钟
+    # ========================================================================
+    restaurant_name: str = Field(
+        default="Kong Food Restaurant",
+        description="Restaurant name"
+    )
+    tax_rate: float = Field(
+        default=0.11,
+        description="Tax rate (e.g., 0.11 for 11%)"
+    )
+    preparation_time_basic: int = Field(
+        default=10,
+        description="Basic dish preparation time in minutes"
+    )
+    preparation_time_complex: int = Field(
+        default=15,
+        description="Complex dish preparation time in minutes"
+    )
     
-    # 文本匹配配置
-    fuzzy_match_threshold: int = Field(default=80, env="FUZZY_MATCH_THRESHOLD")
-    vector_search_threshold: float = Field(default=0.7, env="VECTOR_SEARCH_THRESHOLD")
+    # 营业时间
+    business_hours_start: str = Field(
+        default="09:00",
+        description="Business hours start time (HH:MM)"
+    )
+    business_hours_end: str = Field(
+        default="22:00",
+        description="Business hours end time (HH:MM)"
+    )
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        case_sensitive = False
+    # 货币和地区
+    currency: str = Field(
+        default="USD",
+        description="Currency code"
+    )
+    timezone: str = Field(
+        default="America/New_York",
+        description="Timezone"
+    )
+    
+    # ========================================================================
+    # AI和搜索配置
+    # ========================================================================
+    fuzzy_match_threshold: int = Field(
+        default=80,
+        description="Fuzzy matching threshold (0-100)"
+    )
+    vector_search_threshold: float = Field(
+        default=0.7,
+        description="Vector search similarity threshold (0.0-1.0)"
+    )
+    max_search_results: int = Field(
+        default=5,
+        description="Maximum number of search results to return"
+    )
+    
+    # ========================================================================
+    # 功能开关
+    # ========================================================================
+    enable_voice_messages: bool = Field(
+        default=True,
+        description="Enable voice message processing"
+    )
+    enable_vector_search: bool = Field(
+        default=True,
+        description="Enable vector-based menu search"
+    )
+    enable_analytics: bool = Field(
+        default=True,
+        description="Enable analytics and logging"
+    )
+    enable_cache: bool = Field(
+        default=True,
+        description="Enable response caching"
+    )
+    
+    # ========================================================================
+    # 缓存和性能配置
+    # ========================================================================
+    cache_ttl_seconds: int = Field(
+        default=300,  # 5 minutes
+        description="Cache TTL in seconds"
+    )
+    max_message_length: int = Field(
+        default=4096,
+        description="Maximum message length"
+    )
+    rate_limit_per_minute: int = Field(
+        default=30,
+        description="Rate limit per user per minute"
+    )
+    
+    # ========================================================================
+    # Pydantic配置
+    # ========================================================================
+    model_config = {
+        "env_file": ".env",
+        "env_file_encoding": "utf-8",
+        "case_sensitive": False,
+        "extra": "ignore",  # 忽略额外的环境变量
+        "validate_assignment": True,  # 验证赋值
+    }
 
+    def __init__(self, **kwargs):
+        """初始化设置，支持从环境变量读取"""
+        super().__init__(**kwargs)
+        
+        # 验证必需的配置
+        self._validate_required_settings()
+    
+    def _validate_required_settings(self):
+        """验证必需的配置项"""
+        required_for_production = [
+            "anthropic_api_key",
+            "deepgram_api_key",
+            "loyverse_client_id",
+            "loyverse_client_secret",
+            "loyverse_refresh_token",
+            "loyverse_store_id",
+            "loyverse_pos_device_id"
+        ]
+        
+        if self.environment == "production":
+            missing = []
+            for field in required_for_production:
+                value = getattr(self, field, None)
+                if not value or value in ["", "placeholder", "your-key-here"]:
+                    missing.append(field.upper())
+            
+            if missing:
+                raise ValueError(f"Missing required environment variables for production: {', '.join(missing)}")
+    
+    @property
+    def is_production(self) -> bool:
+        """检查是否为生产环境"""
+        return self.environment.lower() == "production"
+    
+    @property
+    def is_development(self) -> bool:
+        """检查是否为开发环境"""
+        return self.environment.lower() == "development"
+    
+    def get_cors_origins(self) -> list[str]:
+        """获取CORS允许的源"""
+        if self.is_development:
+            return ["*"]
+        else:
+            # 生产环境应该指定具体的域名
+            return [
+                "https://your-frontend-domain.com",
+                "https://your-admin-panel.com"
+            ]
+
+# ========================================================================
+# 全局设置实例
+# ========================================================================
 @lru_cache()
 def get_settings() -> Settings:
+    """获取应用设置（带缓存）"""
     return Settings()
+
+# 导出常用的设置实例
+settings = get_settings()
