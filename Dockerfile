@@ -15,12 +15,12 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy application code
 COPY . .
 
+# Make start script executable
+RUN chmod +x deploy/start.sh
+
 # Create non-root user
 RUN useradd --create-home --shell /bin/bash app \
     && chown -R app:app /app
 USER app
 
-EXPOSE 8000
-
-# Use uvicorn directly
-CMD ["uvicorn", "app:main", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["./deploy/start.sh"]
