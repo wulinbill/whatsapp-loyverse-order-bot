@@ -14,10 +14,63 @@ class LoyverseClient:
     """Loyverse POS API客户端 - 支持正确的税费处理"""
     
     def __init__(self):
-        self.api_token = settings.loyverse_api_token
+        self.refresh_token = settings.loyverse_refresh_token
         self.base_url = "https://api.loyverse.com/v1.0"
-        self.headers = {
-            "Authorization": f"Bearer {self.api_token}",
+        self.access_token = None
+        self.token_expires_at = None
+    
+    async def _get_access_token(self) -> str:
+        """获取或刷新访问令牌"""
+        if self.access_token and self.token_expires_at:
+            # 检查令牌是否还有效（提前5分钟刷新）
+            import time
+            if time.time() < (self.token_expires_at - 300):
+                return self.access_token
+        
+        # 刷新访问令牌
+        await self._refresh_access_token()
+        return self.access_token
+    
+    async def _refresh_access_token(self):
+        """使用 refresh token 获取新的 access token"""
+        try:
+            async with aiohttp.ClientSession() as session:
+                data = {
+                    "grant_type": "refresh_token",
+                    "refresh_token": self.refresh_token,
+                    "client_id": settings.loyverse_client_id,
+                    "client_secret": settings.loyverse_client_secret
+                }
+                
+                async with session.post(
+                    "https://api.loyverse.com/oauth/token",
+                    data=data
+                ) as response:
+                    
+                    if response.status == 200:
+                        token_data = await response.json()
+                        self.access_token = token_data["access_token"]
+                        
+                        # 计算令牌过期时间
+                        import time
+                        expires_in = token_data.get("expires_in", 3600)
+                        self.token_expires_at = time.time() + expires_in
+                        
+                        logger.info("Successfully refreshed Loyverse access token")
+                    else:
+                        error_text = await response.text()
+                        logger.error(f"Failed to refresh token: {response.status} - {error_text}")
+                        raise Exception(f"Token refresh failed: {response.status}")
+                        
+        except Exception as e:
+            logger.error(f"Exception refreshing token: {e}")
+            raise
+    
+    async def _get_headers(self) -> Dict[str, str]:
+        """获取包含认证信息的请求头"""
+        access_token = await self._get_access_token()
+        return {
+            "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json"
         }
     
@@ -60,10 +113,12 @@ class LoyverseClient:
             logger.info(f"Creating receipt with taxes for user {user_id}")
             logger.debug(f"Receipt request: {json.dumps(receipt_request, indent=2)}")
             
+            headers = await self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.base_url}/receipts",
-                    headers=self.headers,
+                    headers=headers,
                     json=receipt_request
                 ) as response:
                     
@@ -145,10 +200,12 @@ class LoyverseClient:
         在Loyverse中，税费必须预先配置，然后通过ID引用
         """
         try:
+            headers = await self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.base_url}/taxes",
-                    headers=self.headers
+                    headers=headers
                 ) as response:
                     
                     if response.status == 200:
@@ -183,6 +240,8 @@ class LoyverseClient:
             # 清理电话号码格式
             clean_phone = self._clean_phone_number(phone)
             
+            headers = await self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 # 使用电话号码搜索客户
                 params = {
@@ -192,7 +251,7 @@ class LoyverseClient:
                 
                 async with session.get(
                     f"{self.base_url}/customers",
-                    headers=self.headers,
+                    headers=headers,
                     params=params
                 ) as response:
                     
@@ -227,10 +286,12 @@ class LoyverseClient:
                 "email": None  # 可选
             }
             
+            headers = await self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 async with session.post(
                     f"{self.base_url}/customers",
-                    headers=self.headers,
+                    headers=headers,
                     json=customer_data
                 ) as response:
                     
@@ -261,10 +322,12 @@ class LoyverseClient:
     async def update_customer(self, customer_id: str, update_data: Dict[str, Any], user_id: str) -> bool:
         """更新客户信息"""
         try:
+            headers = await self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 async with session.put(
                     f"{self.base_url}/customers/{customer_id}",
-                    headers=self.headers,
+                    headers=headers,
                     json=update_data
                 ) as response:
                     
@@ -292,10 +355,12 @@ class LoyverseClient:
     async def get_menu_items(self, user_id: str) -> List[Dict[str, Any]]:
         """获取菜单项目"""
         try:
+            headers = await self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.base_url}/items",
-                    headers=self.headers,
+                    headers=headers,
                     params={"limit": 250}  # 调整为适当的限制
                 ) as response:
                     
@@ -318,10 +383,12 @@ class LoyverseClient:
     async def get_categories(self, user_id: str) -> List[Dict[str, Any]]:
         """获取商品分类"""
         try:
+            headers = await self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.base_url}/categories",
-                    headers=self.headers
+                    headers=headers
                 ) as response:
                     
                     if response.status == 200:
@@ -363,10 +430,12 @@ class LoyverseClient:
     async def test_connection(self, user_id: str) -> bool:
         """测试Loyverse API连接"""
         try:
+            headers = await self._get_headers()
+            
             async with aiohttp.ClientSession() as session:
                 async with session.get(
                     f"{self.base_url}/stores",
-                    headers=self.headers
+                    headers=headers
                 ) as response:
                     
                     if response.status == 200:
