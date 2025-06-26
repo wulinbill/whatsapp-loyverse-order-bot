@@ -10,6 +10,7 @@ from ..speech.deepgram_client import deepgram_client
 from ..utils.alias_matcher import alias_matcher
 from ..utils.vector_search import vector_search_client
 from ..pos.order_processor import order_processor
+from ..utils.memory_sessions import get_user_session, update_user_session
 from .twilio_adapter import twilio_adapter
 from .dialog360_adapter import dialog360_adapter
 
@@ -31,9 +32,6 @@ class WhatsAppRouter:
     def __init__(self):
         self.provider = settings.channel_provider
         self.adapter = self._get_adapter()
-        
-        # 简单的会话状态管理（生产环境应使用Redis等）
-        self.user_sessions = {}
     
     def _get_adapter(self):
         """根据配置选择适配器"""
@@ -94,8 +92,8 @@ class WhatsAppRouter:
         user_id = message_data.get("from_number", "")
         message_type = message_data.get("message_type", "text")
         
-        # 获取或创建用户会话
-        session = self._get_user_session(user_id)
+        # 获取用户会话
+        session = get_user_session(user_id)
         
         try:
             # 处理语音消息
@@ -176,11 +174,11 @@ class WhatsAppRouter:
             logger.error(f"Error processing voice message: {e}")
             return None
     
-    async def _process_text_message(self, message_data: Dict[str, Any], session: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_text_message(self, message_data: Dict[str, Any], session: Any) -> Dict[str, Any]:
         """处理文本消息"""
         user_id = message_data.get("from_number", "")
         text_content = message_data.get("body", "").strip()
-        current_state = session.get("state", ConversationState.GREETING)
+        current_state = session.state
         
         # 根据会话状态处理消息
         if current_state == ConversationState.GREETING:
@@ -195,21 +193,24 @@ class WhatsAppRouter:
             return await self._handle_name_state(user_id, text_content, session)
         else:
             # 默认回到问候状态
-            session["state"] = ConversationState.GREETING
+            session.state = ConversationState.GREETING
+            update_user_session(user_id, session)
             return await self._handle_greeting_state(user_id, text_content, session)
     
-    async def _handle_greeting_state(self, user_id: str, text_content: str, session: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_greeting_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理问候状态 - 按照文档流程"""
         # 检查是否第一条消息就包含订单
         if self._contains_order_keywords(text_content):
             # 直接跳转到订单处理，不发送问候语
-            session["state"] = ConversationState.ORDERING
+            session.state = ConversationState.ORDERING
+            update_user_session(user_id, session)
             return await self._handle_ordering_state(user_id, text_content, session)
         
         # 发送问候消息
         greeting_message = "¡Hola! Bienvenido a Kong Food 🍗. ¿Qué te gustaría ordenar hoy?"
         await self._send_response(user_id, greeting_message)
-        session["state"] = ConversationState.ORDERING
+        session.state = ConversationState.ORDERING
+        update_user_session(user_id, session)
         
         return {"status": "processed", "action": "greeting_sent"}
     
@@ -223,7 +224,7 @@ class WhatsAppRouter:
         text_lower = text.lower()
         return any(keyword in text_lower for keyword in order_keywords)
     
-    async def _handle_ordering_state(self, user_id: str, text_content: str, session: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_ordering_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理订餐状态 - 使用Claude解析并确认"""
         try:
             # 步骤2: 使用Claude解析订单
@@ -231,8 +232,9 @@ class WhatsAppRouter:
             
             if claude_result.get("need_clarify", True):
                 # 步骤4: 需要澄清
-                session["state"] = ConversationState.CLARIFYING
-                session["pending_query"] = text_content
+                session.state = ConversationState.CLARIFYING
+                session.pending_query = text_content
+                update_user_session(user_id, session)
                 
                 clarify_message = self._get_clarification_message(claude_result, text_content)
                 await self._send_response(user_id, clarify_message)
@@ -242,11 +244,13 @@ class WhatsAppRouter:
             # 步骤3: 识别和确认订单
             order_lines = claude_result.get("order_lines", [])
             if order_lines:
-                session["draft_lines"] = order_lines
+                session.draft_lines = order_lines
+                update_user_session(user_id, session)
                 return await self._process_recognized_order(user_id, order_lines, session)
             else:
                 await self._send_response(user_id, "Disculpa, ¿podrías aclararlo, por favor?")
-                session["state"] = ConversationState.CLARIFYING
+                session.state = ConversationState.CLARIFYING
+                update_user_session(user_id, session)
                 return {"status": "processed", "action": "general_clarification"}
                 
         except Exception as e:
@@ -268,7 +272,7 @@ class WhatsAppRouter:
         else:
             return "Disculpa, ¿podrías aclararlo, por favor?"
     
-    async def _process_recognized_order(self, user_id: str, order_lines: List[Dict[str, Any]], session: Dict[str, Any]) -> Dict[str, Any]:
+    async def _process_recognized_order(self, user_id: str, order_lines: List[Dict[str, Any]], session: Any) -> Dict[str, Any]:
         """处理识别到的订单 - 按照文档的步骤3"""
         try:
             # 解析别名并匹配菜品
@@ -276,7 +280,8 @@ class WhatsAppRouter:
             
             if not matched_items:
                 await self._send_response(user_id, "No pude encontrar los productos solicitados. ¿Podría especificar mejor?")
-                session["state"] = ConversationState.CLARIFYING
+                session.state = ConversationState.CLARIFYING
+                update_user_session(user_id, session)
                 return {"status": "processed", "action": "no_matches"}
             
             # 检查是否有歧义选项需要用户选择
@@ -284,16 +289,18 @@ class WhatsAppRouter:
             if ambiguous_items:
                 choice_message = self._build_choice_message(ambiguous_items[0])
                 await self._send_response(user_id, choice_message)
-                session["state"] = ConversationState.CLARIFYING
-                session["pending_choice"] = ambiguous_items[0]
+                session.state = ConversationState.CLARIFYING
+                session.pending_choice = ambiguous_items[0]
+                update_user_session(user_id, session)
                 return {"status": "processed", "action": "choice_needed"}
             
             # 确认单元并询问是否还要其他
-            session["matched_items"] = matched_items
+            session.matched_items = matched_items
             confirmation_message = self._build_confirmation_message(matched_items)
             await self._send_response(user_id, confirmation_message)
             
-            session["state"] = ConversationState.CONFIRMING_ORDER
+            session.state = ConversationState.CONFIRMING_ORDER
+            update_user_session(user_id, session)
             return {"status": "processed", "action": "order_confirmed"}
             
         except Exception as e:
@@ -389,10 +396,10 @@ class WhatsAppRouter:
         else:
             return "¿Algo más?"
     
-    async def _handle_clarifying_state(self, user_id: str, text_content: str, session: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_clarifying_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理澄清状态"""
         # 检查是否是对选择的回应
-        if "pending_choice" in session:
+        if hasattr(session, 'pending_choice') and session.pending_choice:
             return await self._handle_choice_response(user_id, text_content, session)
         
         # 重新分析澄清后的回复
@@ -400,9 +407,10 @@ class WhatsAppRouter:
         
         if not claude_result.get("need_clarify", False) and claude_result.get("order_lines"):
             # 澄清成功，处理订单
-            session["state"] = ConversationState.ORDERING
+            session.state = ConversationState.ORDERING
             order_lines = claude_result.get("order_lines", [])
-            session["draft_lines"] = order_lines
+            session.draft_lines = order_lines
+            update_user_session(user_id, session)
             return await self._process_recognized_order(user_id, order_lines, session)
         else:
             # 仍需澄清
@@ -410,9 +418,9 @@ class WhatsAppRouter:
             await self._send_response(user_id, clarify_message)
             return {"status": "processed", "action": "still_clarifying"}
     
-    async def _handle_choice_response(self, user_id: str, text_content: str, session: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_choice_response(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理用户对选择的回应"""
-        pending_choice = session.get("pending_choice", {})
+        pending_choice = session.pending_choice
         matches = pending_choice.get("matches", [])
         
         # 尝试解析用户的选择
@@ -423,7 +431,7 @@ class WhatsAppRouter:
             selected_match = matches[choice_num - 1]
             
             # 更新匹配项
-            matched_items = session.get("matched_items", [])
+            matched_items = session.matched_items if hasattr(session, 'matched_items') else []
             for item in matched_items:
                 if item.get("original_alias") == pending_choice.get("original_alias"):
                     item.update({
@@ -437,21 +445,24 @@ class WhatsAppRouter:
                     })
                     break
             
-            session["matched_items"] = matched_items
-            del session["pending_choice"]
+            session.matched_items = matched_items
+            session.pending_choice = None
+            update_user_session(user_id, session)
             
             # 检查是否还有其他需要选择的项目
             remaining_choices = self._find_ambiguous_items(matched_items)
             if remaining_choices:
                 choice_message = self._build_choice_message(remaining_choices[0])
                 await self._send_response(user_id, choice_message)
-                session["pending_choice"] = remaining_choices[0]
+                session.pending_choice = remaining_choices[0]
+                update_user_session(user_id, session)
                 return {"status": "processed", "action": "next_choice_needed"}
             else:
                 # 所有选择完成，确认订单
                 confirmation_message = self._build_confirmation_message(matched_items)
                 await self._send_response(user_id, confirmation_message)
-                session["state"] = ConversationState.CONFIRMING_ORDER
+                session.state = ConversationState.CONFIRMING_ORDER
+                update_user_session(user_id, session)
                 return {"status": "processed", "action": "choices_completed"}
         else:
             # 无效选择
@@ -483,7 +494,7 @@ class WhatsAppRouter:
         
         return None
     
-    async def _handle_confirming_state(self, user_id: str, text_content: str, session: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_confirming_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理确认状态 - 询问是否还要其他"""
         text_lower = text_content.lower()
         
@@ -495,44 +506,50 @@ class WhatsAppRouter:
             # 用户想要添加更多
             if self._contains_order_keywords(text_content):
                 # 直接包含了新的订单项
-                session["state"] = ConversationState.ORDERING
+                session.state = ConversationState.ORDERING
+                update_user_session(user_id, session)
                 return await self._handle_ordering_state(user_id, text_content, session)
             else:
                 # 只是说要更多，但没说具体要什么
                 await self._send_response(user_id, "¿Qué más te gustaría ordenar?")
-                session["state"] = ConversationState.ORDERING
+                session.state = ConversationState.ORDERING
+                update_user_session(user_id, session)
                 return {"status": "processed", "action": "asking_for_more"}
         
         elif any(keyword in text_lower for keyword in no_more_keywords):
             # 用户不要更多，进入询问姓名阶段
-            session["state"] = ConversationState.ASKING_NAME
+            session.state = ConversationState.ASKING_NAME
+            update_user_session(user_id, session)
             await self._send_response(user_id, "Para finalizar, ¿a nombre de quién registramos la orden?")
             return {"status": "processed", "action": "asking_name"}
         
         else:
             # 可能是新的订单项
             if self._contains_order_keywords(text_content):
-                session["state"] = ConversationState.ORDERING
+                session.state = ConversationState.ORDERING
+                update_user_session(user_id, session)
                 return await self._handle_ordering_state(user_id, text_content, session)
             else:
                 # 不明确的回复
                 await self._send_response(user_id, "¿Algo más que quieras ordenar?")
                 return {"status": "processed", "action": "clarifying_if_more"}
     
-    async def _handle_name_state(self, user_id: str, text_content: str, session: Dict[str, Any]) -> Dict[str, Any]:
+    async def _handle_name_state(self, user_id: str, text_content: str, session: Any) -> Dict[str, Any]:
         """处理询问姓名状态 - 步骤5到8"""
         # 保存客户姓名
         customer_name = text_content.strip()
-        session["customer_name"] = customer_name
+        session.customer_name = customer_name
+        update_user_session(user_id, session)
         
         # 获取客户电话号码（就是WhatsApp号码）
         customer_phone = user_id  # WhatsApp号码
         
         # 步骤6: 创建订单并注册到POS
-        matched_items = session.get("matched_items", [])
+        matched_items = session.matched_items if hasattr(session, 'matched_items') else []
         if not matched_items:
             await self._send_response(user_id, "Hubo un error. Por favor, realice su pedido nuevamente.")
-            session["state"] = ConversationState.ORDERING
+            session.state = ConversationState.ORDERING
+            update_user_session(user_id, session)
             return {"status": "error", "error": "no_matched_items"}
         
         try:
@@ -547,19 +564,22 @@ class WhatsAppRouter:
                 # 步骤8: 发送感谢消息
                 await self._send_response(user_id, "¡Muchas gracias por tu pedido! 😊")
                 
-                session["state"] = ConversationState.COMPLETED
-                session["last_order"] = result
+                session.state = ConversationState.COMPLETED
+                session.last_order = result
+                update_user_session(user_id, session)
                 
                 return {"status": "processed", "action": "order_completed", "order": result}
             else:
                 await self._send_response(user_id, "Hubo un error procesando su pedido. Por favor, inténtelo de nuevo.")
-                session["state"] = ConversationState.ORDERING
+                session.state = ConversationState.ORDERING
+                update_user_session(user_id, session)
                 return {"status": "error", "error": result.get("error")}
                 
         except Exception as e:
             logger.error(f"Error creating order: {e}")
             await self._send_response(user_id, "Hubo un error procesando su pedido. Por favor, inténtelo de nuevo.")
-            session["state"] = ConversationState.ORDERING
+            session.state = ConversationState.ORDERING
+            update_user_session(user_id, session)
             return {"status": "error", "error": str(e)}
     
     def _build_final_summary(self, order_result: Dict[str, Any], customer_name: str) -> str:
@@ -590,36 +610,6 @@ class WhatsAppRouter:
     async def _send_response(self, user_id: str, message: str) -> bool:
         """发送响应消息"""
         return await self.adapter.send_message(user_id, message, user_id)
-    
-    def _get_user_session(self, user_id: str) -> Dict[str, Any]:
-        """获取或创建用户会话"""
-        if user_id not in self.user_sessions:
-            self.user_sessions[user_id] = {
-                "state": ConversationState.GREETING,
-                "created_at": time.time(),
-                "last_activity": time.time()
-            }
-        
-        self.user_sessions[user_id]["last_activity"] = time.time()
-        return self.user_sessions[user_id]
-    
-    def cleanup_expired_sessions(self, max_age_hours: int = 1):
-        """清理过期的会话 - 按文档60分钟"""
-        current_time = time.time()
-        max_age_seconds = max_age_hours * 3600
-        
-        expired_users = []
-        for user_id, session in self.user_sessions.items():
-            if current_time - session.get("last_activity", 0) > max_age_seconds:
-                expired_users.append(user_id)
-        
-        for user_id in expired_users:
-            session = self.user_sessions[user_id]
-            if session.get("state") == ConversationState.COMPLETED:
-                del self.user_sessions[user_id]
-        
-        if expired_users:
-            logger.info(f"Cleaned up {len(expired_users)} expired sessions")
 
 # 全局WhatsApp路由器实例
 whatsapp_router = WhatsAppRouter()
