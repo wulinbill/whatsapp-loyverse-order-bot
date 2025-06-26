@@ -33,16 +33,17 @@ class LoyverseClient:
             创建的收据信息
         """
         try:
+            # 获取税费ID（需要预先配置在Loyverse中）
+            tax_id = await self._get_ivu_tax_id(user_id)
+            
             # 构建完整的收据请求
             receipt_request = {
                 "source": "API",
-                "receipt_number": self._generate_receipt_number(),
                 "receipt_date": datetime.utcnow().isoformat() + "Z",
                 "store_id": settings.loyverse_store_id,
-                "line_items": receipt_data.get("line_items", []),
+                "line_items": self._prepare_line_items_with_taxes(receipt_data.get("line_items", []), tax_id),
                 "payments": receipt_data.get("payments", []),
-                "taxes": receipt_data.get("taxes", []),  # 关键：包含税费信息
-                "receipt_note": receipt_data.get("receipt_note", "")
+                "note": receipt_data.get("receipt_note", "")
             }
             
             # 如果有客户ID，添加客户信息
@@ -71,8 +72,8 @@ class LoyverseClient:
                         
                         business_logger.log_pos_transaction(
                             user_id=user_id,
-                            receipt_id=receipt.get("id"),
-                            total_amount=sum(p.get("amount", 0) for p in receipt_request["payments"]),
+                            receipt_id=receipt.get("receipt_number"),
+                            total_amount=sum(p.get("money_amount", 0) for p in receipt_request["payments"]),
                             transaction_type="sale"
                         )
                         
@@ -111,6 +112,70 @@ class LoyverseClient:
                 "error": "RECEIPT_CREATION_EXCEPTION",
                 "message": str(e)
             }
+    
+    def _prepare_line_items_with_taxes(self, line_items: List[Dict[str, Any]], tax_id: Optional[str]) -> List[Dict[str, Any]]:
+        """
+        为每个line item添加税费信息
+        根据Loyverse API，税费应该在每个line_item中指定
+        """
+        processed_items = []
+        
+        for item in line_items:
+            line_item = {
+                "quantity": item.get("quantity", 1),
+                "variant_id": item.get("variant_id"),
+                "price": item.get("price", 0)
+            }
+            
+            # 添加税费信息到每个line item
+            if tax_id:
+                line_item["line_taxes"] = [{"id": tax_id}]
+            
+            # 添加备注
+            if item.get("line_note"):
+                line_item["line_note"] = item["line_note"]
+            
+            processed_items.append(line_item)
+        
+        return processed_items
+    
+    async def _get_ivu_tax_id(self, user_id: str) -> Optional[str]:
+        """
+        获取IVU税费的ID
+        在Loyverse中，税费必须预先配置，然后通过ID引用
+        """
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    f"{self.base_url}/taxes",
+                    headers=self.headers
+                ) as response:
+                    
+                    if response.status == 200:
+                        data = await response.json()
+                        taxes = data.get("taxes", [])
+                        
+                        # 查找IVU税费（按名称匹配）
+                        for tax in taxes:
+                            tax_name = tax.get("name", "").lower()
+                            if "ivu" in tax_name or "impuesto" in tax_name:
+                                return tax.get("id")
+                        
+                        # 如果没找到，返回第一个税费（假设已配置）
+                        if taxes:
+                            logger.warning(f"No IVU tax found, using first available tax: {taxes[0].get('name')}")
+                            return taxes[0].get("id")
+                        
+                        logger.error("No taxes configured in Loyverse")
+                        return None
+                    
+                    else:
+                        logger.error(f"Failed to get taxes: {response.status}")
+                        return None
+                        
+        except Exception as e:
+            logger.error(f"Exception getting tax ID: {e}")
+            return None
     
     async def find_customer_by_phone(self, phone: str, user_id: str) -> Optional[Dict[str, Any]]:
         """根据电话号码查找客户"""
