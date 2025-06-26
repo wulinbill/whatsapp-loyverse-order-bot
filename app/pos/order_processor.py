@@ -15,55 +15,69 @@ class OrderProcessor:
     """订单处理器，负责将用户订单转换为POS系统格式"""
     
     def __init__(self):
-        self.tax_rate = settings.tax_rate
+        self.tax_rate = settings.tax_rate  # 11.5% IVU
         self.store_id = settings.loyverse_store_id
     
-    async def process_order(self, order_data: Dict[str, Any], user_id: str, customer_phone: str) -> Dict[str, Any]:
+    async def place_order(self, customer_name: str, customer_phone: str, matched_items: List[Dict[str, Any]], user_id: str) -> Dict[str, Any]:
         """
-        处理完整的订单流程
+        完整的订单处理流程 - 按照文档步骤6到7
         
         Args:
-            order_data: Claude提取的订单数据
-            user_id: 用户ID
+            customer_name: 客户姓名
             customer_phone: 客户电话号码
+            matched_items: 匹配的菜品项目
+            user_id: 用户ID
             
         Returns:
             处理结果
         """
         try:
-            logger.info(f"Processing order for user {user_id}")
+            logger.info(f"Processing order for customer {customer_name} ({customer_phone})")
             
-            # 1. 匹配菜单项
-            matched_items = await self._match_menu_items(order_data.get("order_lines", []), user_id)
-            
-            if not matched_items:
-                return {
-                    "success": False,
-                    "error": "NO_ITEMS_MATCHED",
-                    "message": "No se pudieron encontrar los productos solicitados."
-                }
-            
-            # 2. 应用Kong Food的订餐规则
+            # 1. 应用Kong Food的订餐规则
             processed_items = self._apply_ordering_rules(matched_items)
             
-            # 3. 转换为Loyverse格式
+            # 2. 转换为Loyverse格式
             line_items = self._convert_to_loyverse_format(processed_items)
             
-            # 4. 计算总价
-            total_info = self._calculate_totals(line_items)
+            # 3. 计算总价（包含税费）
+            total_info = self._calculate_totals_with_tax(line_items)
             
-            # 5. 处理客户信息
-            customer_id = await self._handle_customer(customer_phone, user_id)
+            # 4. 处理客户信息
+            customer_id = await self._handle_customer(customer_name, customer_phone, user_id)
             
-            # 6. 创建订单
-            receipt = await loyverse_client.create_receipt(customer_id, line_items, user_id)
+            # 5. 确定准备时间
+            preparation_time = self._calculate_preparation_time(processed_items)
+            
+            # 6. 创建Loyverse收据（包含正确的税费结构）
+            receipt_data = {
+                "customer_id": customer_id,
+                "line_items": line_items,
+                "payments": [{
+                    "type": "CASH",
+                    "amount": total_info["total_with_tax"]
+                }],
+                "taxes": [{
+                    "name": "IVU",
+                    "rate": self.tax_rate,
+                    "amount": total_info["tax_amount"]
+                }],
+                "receipt_note": f"Cliente: {customer_name}\nTeléfono: {customer_phone}\nTiempo estimado: {preparation_time} min"
+            }
+            
+            receipt = await loyverse_client.create_receipt_with_taxes(receipt_data, user_id)
             
             return {
                 "success": True,
                 "receipt": receipt,
-                "matched_items": processed_items,
-                "total_info": total_info,
-                "customer_id": customer_id
+                "line_items": processed_items,
+                "total_with_tax": total_info["total_with_tax"],
+                "subtotal": total_info["subtotal"],
+                "tax_amount": total_info["tax_amount"],
+                "preparation_time": preparation_time,
+                "customer_id": customer_id,
+                "customer_name": customer_name,
+                "customer_phone": customer_phone
             }
             
         except Exception as e:
@@ -80,48 +94,15 @@ class OrderProcessor:
                 "message": "Error al procesar el pedido. Inténtelo de nuevo."
             }
     
-    async def _match_menu_items(self, order_lines: List[Dict[str, Any]], user_id: str) -> List[Dict[str, Any]]:
-        """匹配菜单项"""
-        matched_items = []
-        
-        for line in order_lines:
-            alias = line.get("alias", "")
-            quantity = line.get("quantity", 1)
-            modifiers = line.get("modifiers", [])
-            
-            if not alias:
-                continue
-            
-            # 使用别名匹配器查找菜品
-            matches = alias_matcher.find_matches(alias, user_id, limit=5)
-            
-            if matches:
-                # 选择最佳匹配
-                best_match = matches[0]
-                
-                matched_item = {
-                    "item_id": best_match.get("item_id"),
-                    "variant_id": best_match.get("variant_id"),
-                    "item_name": best_match.get("item_name"),
-                    "category_name": best_match.get("category_name"),
-                    "price": best_match.get("price", 0),
-                    "sku": best_match.get("sku"),
-                    "quantity": quantity,
-                    "modifiers": modifiers,
-                    "match_score": best_match.get("score", 0)
-                }
-                
-                matched_items.append(matched_item)
-            else:
-                logger.warning(f"No match found for alias: {alias}")
-        
-        return matched_items
-    
     def _apply_ordering_rules(self, matched_items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         """应用Kong Food的订餐规则"""
         processed_items = []
         
         for item in matched_items:
+            if item.get("needs_choice", False):
+                # 跳过仍需选择的项目
+                continue
+                
             processed_item = item.copy()
             
             # 应用Combinaciones规则
@@ -310,7 +291,8 @@ class OrderProcessor:
             line_item = {
                 "quantity": item.get("quantity", 1),
                 "variant_id": item.get("variant_id"),
-                "price": item.get("price", 0)
+                "price": item.get("price", 0),
+                "item_name": item.get("item_name", "")  # 添加项目名称以便显示
             }
             
             # 添加备注（组合修饰符信息）
@@ -322,8 +304,8 @@ class OrderProcessor:
         
         return line_items
     
-    def _calculate_totals(self, line_items: List[Dict[str, Any]]) -> Dict[str, float]:
-        """计算订单总价"""
+    def _calculate_totals_with_tax(self, line_items: List[Dict[str, Any]]) -> Dict[str, float]:
+        """计算订单总价，包含正确的税费计算"""
         subtotal = sum(item.get("price", 0) * item.get("quantity", 1) for item in line_items)
         tax_amount = subtotal * self.tax_rate
         total_with_tax = subtotal + tax_amount
@@ -335,8 +317,24 @@ class OrderProcessor:
             "tax_rate": self.tax_rate
         }
     
-    async def _handle_customer(self, phone: str, user_id: str) -> Optional[str]:
-        """处理客户信息"""
+    def _calculate_preparation_time(self, items: List[Dict[str, Any]]) -> int:
+        """
+        计算准备时间 - 按照文档规则
+        < 3 platos principales → 10 min
+        ≥ 3 platos principales → 15 min
+        """
+        main_dish_count = 0
+        main_dish_categories = ["combinaciones", "pollo frito", "carnes", "mariscos"]
+        
+        for item in items:
+            category = item.get("category_name", "").lower()
+            if any(main_cat in category for main_cat in main_dish_categories):
+                main_dish_count += item.get("quantity", 1)
+        
+        return 15 if main_dish_count >= 3 else 10
+    
+    async def _handle_customer(self, name: str, phone: str, user_id: str) -> Optional[str]:
+        """处理客户信息 - 步骤5"""
         if not phone:
             return None
         
@@ -344,23 +342,24 @@ class OrderProcessor:
         existing_customer = await loyverse_client.find_customer_by_phone(phone, user_id)
         
         if existing_customer:
-            return existing_customer.get("id")
+            # 更新客户姓名（如果需要）
+            customer_id = existing_customer.get("id")
+            current_name = existing_customer.get("name", "")
+            
+            if current_name != name and not current_name.startswith("Cliente"):
+                # 只有当前名称是临时名称时才更新
+                await loyverse_client.update_customer(customer_id, {"name": name}, user_id)
+            
+            return customer_id
         
-        # 创建新客户（如果需要姓名，可以在后续流程中更新）
+        # 创建新客户
         customer_id = await loyverse_client.create_customer(
-            name=f"Cliente {phone[-4:]}",  # 临时名称
+            name=name,
             phone=phone,
             user_id=user_id
         )
         
         return customer_id
-    
-    async def update_customer_name(self, customer_id: str, name: str, user_id: str) -> bool:
-        """更新客户姓名"""
-        # 这里可以添加更新客户信息的逻辑
-        # 目前Loyverse API的customer更新需要具体实现
-        logger.info(f"Would update customer {customer_id} name to {name}")
-        return True
 
 # 全局订单处理器实例
 order_processor = OrderProcessor()
